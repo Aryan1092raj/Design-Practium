@@ -63,17 +63,8 @@ def generate_launch_description():
         get_package_share_directory('realsense2_camera'),
         'launch', 'rs_launch.py'
     )
-    # SLAM configuration options:
-    # - slam_toolbox_v14r7_hector_hybrid.yaml: HECTOR HYBRID (0.3m search, 2mm res, 0.75/0.75) [NEW!]
-    # - slam_toolbox_v14_pro.yaml: Maximum quality Hector-style (3.4° + 2cm res, ~65% CPU)
-    # - slam_toolbox_v14r6.yaml: Symmetric 0.75/0.75 (0.6m search, no leaks fix)
-    # - slam_toolbox_v14r5.yaml: Maximum rotation trust (corners good, but scan leaks)
-    # - slam_toolbox_v14r4.yaml: Stable odometry-led (60% both, but rotation still reorients)
-    # - slam_toolbox_v14r3.yaml: Rotation-aware (poor results - position instability)
-    # - slam_toolbox_v14r2.yaml: Geometry-first (sharp L-corners, 5mm precision, but rotation issues)
-    # - slam_toolbox_v14r1.yaml: Optimized for excellent odometry (3.4°, 2cm, loop closure)
-    # - slam_toolbox_v14.yaml: Balanced config (5° threshold, ~35% CPU, good results)
-    # - slam_toolbox_v2.yaml: Legacy config (poor results, not recommended)
+    # SLAM configuration options. The older v2/v14 tuning series was retired;
+    # see src/wheelchair_localization/archive/config/ for the full history.
     default_slam_config = os.path.join(
         wheelchair_localization_dir,
         'config',
@@ -760,7 +751,7 @@ def generate_launch_description():
     #   After 5 iterations (v0-v4), depth camera noise fundamentally degrades
     #   scan matching quality → localization drift → map corruption.
     #   TurtleBot4 uses the same architecture: lidar SLAM + depth costmap.
-    # Optional (true): FUSED SLAM — experimental, uses slam_toolbox_fused_v4.yaml
+    # Optional (true): FUSED SLAM — experimental, uses slam_toolbox_fused_v21.yaml
     # NOTE: Cameras STILL run in both modes for Nav2 costmap obstacle detection.
     # SLAM nodes — hospital_mode selects 25m configs; default uses proven home configs
     def _make_slam_toolbox(context, *_args, **_kwargs):

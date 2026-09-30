@@ -75,6 +75,15 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
+If a Conda Python is active it can shadow the system one and break the
+`ament_cmake` packages with `ModuleNotFoundError: No module named 'catkin_pkg'`.
+Build with the system interpreter:
+
+```bash
+export PATH=/usr/bin:$PATH
+colcon build --symlink-install --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
 The build uses `--symlink-install`, so editing a YAML, behaviour-tree XML, or RViz
 config under `src/` takes effect on the next launch with no rebuild. `source
 setup.bash` defines the `run_nav`, `run_slam`, and `run_localization` helpers.
@@ -166,6 +175,12 @@ spin −30°, then a 0.25 m backup as last resort. A new goal cancels recovery.
 Config files (`*.yaml`, behaviour-tree `*.xml`, RViz configs) are never edited in
 place. Each change creates a new versioned file, the launch default is repointed to
 it, and the old file is kept for rollback. Source code is edited normally.
+
+Once a config is fully superseded it is moved to an `archive/` folder next to its
+package (`wheelchair_navigation/archive/`, `wheelchair_localization/archive/`),
+which is excluded from the install. Only configs reachable from a launch file are
+installed, so `config/` holds exactly the active set. Each archive has a README
+listing the active files and how to roll back.
 
 ## Notes
 

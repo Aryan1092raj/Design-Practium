@@ -39,7 +39,7 @@ def generate_launch_description():
     wheelchair_localization_dir = get_package_share_directory('wheelchair_localization')
     wc_control_dir = get_package_share_directory('wc_control')
 
-    ws_root = '/home/sidd/wheelchair_nav'
+    ws_root = os.environ.get('WHEELCHAIR_WS', '/home/aryan-raj/wheelchair_nav')  # ponytail: env override, fallback this laptop
 
     default_model_path = os.path.join(
         wheelchair_description_dir, 'urdf', 'wheelchair_description.urdf.xacro'

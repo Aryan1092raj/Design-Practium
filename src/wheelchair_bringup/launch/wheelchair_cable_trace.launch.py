@@ -47,7 +47,7 @@ def generate_launch_description():
     wc_control_dir = get_package_share_directory('wc_control')
 
     # Workspace root
-    ws_root = '/home/sidd/wheelchair_nav'
+    ws_root = os.environ.get('WHEELCHAIR_WS', '/home/aryan-raj/wheelchair_nav')  # ponytail: env override, fallback this laptop
     cable_trace_dir = os.path.join(ws_root, 'cable_trace_deploy')
 
     # Default checkpoint

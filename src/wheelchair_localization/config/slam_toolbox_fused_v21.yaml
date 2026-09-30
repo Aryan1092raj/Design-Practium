@@ -5,7 +5,8 @@
 #
 # DO NOT EDIT — create a new versioned file (e.g., slam_toolbox_fused_v22.yaml)
 #
-# Based on: slam_toolbox_fused_v11.yaml (proven working, Jetson-tested)
+# Based on: slam_toolbox_fused_v11.yaml (proven working, Jetson-tested;
+#   now in archive/config/, kept for rollback)
 #
 # v17-v20 ALL drifted because they diverged from v11 baseline:
 #   v17: smear=0.07 (> hard max 0.05 → SIGABRT)

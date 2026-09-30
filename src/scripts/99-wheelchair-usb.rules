@@ -1,0 +1,10 @@
+# Wheelchair USB rules - copy to /etc/udev/rules.d/ with sudo
+# Arduino Mega (motors/encoders) - /dev/ttyACM0
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0042", SYMLINK+="wheelchair_arduino", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="0483", SYMLINK+="wheelchair_arduino", MODE="0666"
+KERNEL=="ttyACM*", MODE="0666"
+# RPLidar S3 - /dev/ttyUSB0
+KERNEL=="ttyUSB*", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="rplidar", MODE="0666"
+# Intel RealSense (all D4xx) - no symlink, just permissions
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", MODE="0666"

@@ -54,7 +54,7 @@ Architecture:
     copy /scan_filtered -> NaN->inf -> footprint filter -> rear crop
     -> range-adaptive MIN merge from camera overlays -> publish /scan_fused
 
-Paired with: slam_toolbox_fused_v11.yaml (use_fused_slam:=true)
+Paired with: slam_toolbox_fused_v21.yaml (use_fused_slam:=true)
              or slam_toolbox_motion_compensated_v2.yaml (lidar-only)
 DO NOT EDIT — create a new versioned file (scan_fusion_v9.py)
 """

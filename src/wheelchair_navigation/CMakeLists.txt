@@ -15,9 +15,11 @@ install(DIRECTORY
 )
 
 # Install config files
-install(DIRECTORY
-  config
+# PATTERN excludes archive/: superseded versions are kept in the repo for
+# rollback but must not shadow the active configs in the installed share dir.
+install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}/
+  PATTERN "archive" EXCLUDE
 )
 
 # Install behavior tree files

@@ -1,0 +1,23 @@
+# ============================================================================
+# SLAM Toolbox - SIMULATION OVERRIDES
+# ============================================================================
+# Loaded AFTER one of wheelchair_localization/config/slam_toolbox_*.yaml, so the
+# sim-only values below win over the real-robot ones:
+#   - real robot scans come from /scan_fused or /scan_filtered (fusion/laser_filter
+#     pipelines that do not run in Gazebo) -> use the raw bridged /scan
+#   - Gazebo publishes on /clock, so the node must use sim time
+#   - there is no interactive RViz panel in the sim launch
+#
+# Usage:
+#   ros2 run slam_toolbox async_slam_toolbox_node --ros-args \
+#     --params-file <slam_toolbox_*.yaml> --params-file <this file>
+# ============================================================================
+slam_toolbox:
+  ros__parameters:
+    use_sim_time: true
+    scan_topic: /scan
+    mode: mapping
+    enable_interactive_mode: false
+    # Gazebo GPU lidar is 12 m / 360 beams; the real configs allow up to 30 m.
+    # Clamping here keeps empty-space readings from inflating the map.
+    max_laser_range: 12.0

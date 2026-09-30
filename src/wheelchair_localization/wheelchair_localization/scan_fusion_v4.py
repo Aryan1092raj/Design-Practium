@@ -30,7 +30,7 @@ Logic:
   3. Footprint filter (proven correct)
   4. Publish
 
-Paired with: slam_toolbox_fused_v7.yaml (IDENTICAL to lidar-only except scan_topic + max_range)
+Paired with: slam_toolbox_fused_v21.yaml (IDENTICAL to lidar-only except scan_topic + max_range)
 
 Author: Simplified from v3
 Date: 2026-02-24

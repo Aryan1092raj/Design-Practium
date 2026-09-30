@@ -35,7 +35,7 @@ def generate_launch_description():
     wheelchair_description_dir = get_package_share_directory('wheelchair_description')
 
     # Workspace root - use hardcoded path for reliability
-    ws_root = '/home/sidd/wheelchair_nav'
+    ws_root = os.environ.get('WHEELCHAIR_WS', '/home/aryan-raj/wheelchair_nav')  # ponytail: env override, fallback this laptop
 
     # Default configurations - use package paths where possible
     default_map_file = os.path.join(ws_root, 'maps', 'h2.yaml')

@@ -105,6 +105,7 @@
       <update_rate>100</update_rate>
       <visualize>true</visualize>
       <topic>/imu/out</topic>
+      <gz_frame_id>IMU</gz_frame_id>
       <imu>
         <angular_velocity>
           <x>
@@ -157,6 +158,12 @@
       <pose>0 0 0 0 0 0</pose>
       <visualize>true</visualize>
       <update_rate>10</update_rate>
+      <!-- Publish on a fixed topic/frame so the ROS bridge can map it to /scan.
+           Without these, gz uses the world-scoped name
+           /world/<world>/model/wheelchair/link/lidar/sensor/gpu_lidar/scan
+           and frame_ids like wheelchair/lidar/gpu_lidar, which do not exist in TF. -->
+      <topic>/scan</topic>
+      <gz_frame_id>lidar</gz_frame_id>
       <lidar>
         <scan>
           <horizontal>

@@ -33,7 +33,7 @@ Architecture:
   Result: Camera contributions are rock-solid between camera updates.
   No motion comp jitter. No override noise. Clean SLAM maps.
 
-Paired with: slam_toolbox_fused_v7.yaml
+Paired with: slam_toolbox_fused_v21.yaml
 """
 
 import array as _array

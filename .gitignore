@@ -28,6 +28,12 @@ rosbag2_*/
 # Isaac Lab USD export (~60 MB, regenerated from URDF; not needed for colcon)
 src/wheelchair_description/urdf/wheelchair_unified.usda
 
+# Gazebo simulation assets (~117 MB of binaries; distributed as the zips in
+# Dp/Simulations/, not in git history). Needed at build/run time, so they stay
+# in the working tree — just untracked.
+src/wheelchair_description/models/
+src/wheelchair_description/photos/
+
 # Duplicates / archives that crept into src/
 src/wheelchair_description (2)/
 src/wheelchair_description.zip

@@ -48,7 +48,8 @@ if [ "$1" != "--skip" ]; then
         rm -rf build install log
     fi
 
-    colcon build --symlink-install 2>&1 | tail -20
+    colcon build --symlink-install --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3 2>&1 | tail -20
+    # ponytail: pin system python; conda (~/.local/bin, miniconda) shadows break ament catkin_pkg
 
     if [ ${PIPESTATUS[0]} -eq 0 ]; then
         echo "[OK] Build successful"

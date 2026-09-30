@@ -45,7 +45,7 @@ def generate_launch_description():
     wheelchair_description_dir = get_package_share_directory('wheelchair_description')
 
     # Workspace root
-    ws_root = '/home/sidd/wheelchair_nav'
+    ws_root = os.environ.get('WHEELCHAIR_WS', '/home/aryan-raj/wheelchair_nav')  # ponytail: env override, fallback this laptop
 
     # ABLATION DEFAULTS — LiDAR-only map + STVL nav2 params
     default_map_file = os.path.join(ws_root, 'maps', '2026-03-06_lidar_only.yaml')

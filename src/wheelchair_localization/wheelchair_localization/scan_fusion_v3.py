@@ -49,7 +49,7 @@ Performance targets (unchanged):
 
 Author: Iteration from v2 audit + v5 failure analysis
 Date: 2026-02-24
-Paired with: slam_toolbox_fused_v6.yaml
+Paired with: slam_toolbox_fused_v21.yaml
 """
 
 import numpy as np
