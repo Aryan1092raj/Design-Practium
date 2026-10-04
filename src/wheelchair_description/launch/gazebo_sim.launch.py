@@ -61,6 +61,7 @@ def generate_launch_description():
     teleop = LaunchConfiguration("teleop")
     teleop_keyboard = LaunchConfiguration("teleop_keyboard")
     bridge_lidar = LaunchConfiguration("bridge_lidar")
+    bridge_camera = LaunchConfiguration("bridge_camera")
     ekf = LaunchConfiguration("ekf")
     slam = LaunchConfiguration("slam")
     slam_params_file = LaunchConfiguration("slam_params_file")
@@ -103,6 +104,12 @@ def generate_launch_description():
     declare_bridge_lidar = DeclareLaunchArgument(
         "bridge_lidar", default_value="true",
         description="Bridge the Gazebo GPU LiDAR to /scan (sensor_msgs/LaserScan)"
+    )
+    declare_bridge_camera = DeclareLaunchArgument(
+        "bridge_camera", default_value="false",
+        description="Bridge the three sim RGB-D cameras to the RealSense topic names "
+                    "(/<cam>/color/image_raw, /<cam>/aligned_depth_to_color/image_raw, "
+                    "/<cam>/color/camera_info), used by scripts/voice_nav.py"
     )
     declare_ekf = DeclareLaunchArgument(
         "ekf", default_value="true",
@@ -246,6 +253,28 @@ def generate_launch_description():
         condition=IfCondition(bridge_lidar),
     )
 
+    # The three sim RGB-D cameras (urdf/wc_gazebo.xacro) are remapped to the RealSense topic
+    # names, so scripts/voice_nav.py runs unchanged on the chair.
+    sim_cameras = ["camera", "mapping_camera", "right_camera"]
+    camera_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="camera_bridge",
+        arguments=[a for c in sim_cameras for a in (
+            f"/{c}/image@sensor_msgs/msg/Image[gz.msgs.Image",
+            f"/{c}/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
+            f"/{c}/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+        )],
+        remappings=[r for c in sim_cameras for r in (
+            (f"/{c}/image", f"/{c}/color/image_raw"),
+            (f"/{c}/depth_image", f"/{c}/aligned_depth_to_color/image_raw"),
+            (f"/{c}/camera_info", f"/{c}/color/camera_info"),
+        )],
+        parameters=[{"use_sim_time": True}],
+        output="screen",
+        condition=IfCondition(bridge_camera),
+    )
+
     # The EKF's imu0 input is /imu (hardware name), while Gazebo publishes /imu/out.
     # scripts/imu_out_to_imu republishes it with frame_id base_link, exactly as it does
     # for the real robot.
@@ -281,7 +310,15 @@ def generate_launch_description():
                 executable="ekf_node",
                 name="ekf_filter_node",
                 output="screen",
-                parameters=[ekf_config, {"odom0": "/wc_control/odom_base", "use_sim_time": True}],
+                parameters=[ekf_config, {
+                    "odom0": "/wc_control/odom_base",
+                    # Sim only: the wheels' own x, y drift with their heading
+                    # (castor slip, 45 deg off after one trip), so fuse only
+                    # forward velocity and let the IMU yaw integrate position.
+                    "odom0_config": [False, False, False, False, False, False,
+                                     True, False, False, False, False, False,
+                                     False, False, False],
+                    "use_sim_time": True}],
             )
         ],
         condition=IfCondition(ekf),
@@ -469,6 +506,7 @@ def generate_launch_description():
         declare_teleop,
         declare_teleop_keyboard,
         declare_bridge_lidar,
+        declare_bridge_camera,
         declare_ekf,
         declare_slam,
         declare_slam_params,
@@ -484,6 +522,7 @@ def generate_launch_description():
         teleop_converter,
         keyboard_node,
         lidar_bridge,
+        camera_bridge,
         imu_republisher,
         ekf_node,
         slam_node,

@@ -222,19 +222,23 @@
 
   <!-- Camera Plugin -->
   <gazebo reference="camera">
-    <sensor type="camera" name="camera1">
-      <update_rate>30.0</update_rate>
+    <!-- rgbd_camera publishes camera/image, camera/depth_image and camera/camera_info;
+         scripts/voice_nav.py uses the depth to turn a VLM bounding box into a map goal. -->
+    <sensor type="rgbd_camera" name="camera1">
+      <topic>camera</topic>
+      <gz_frame_id>camera_color_optical_frame</gz_frame_id>
+      <update_rate>10.0</update_rate>
       <visualize>true</visualize>
       <camera>
         <horizontal_fov>1.3962634</horizontal_fov>
         <image>
-          <width>800</width>
-          <height>600</height>
+          <width>640</width>
+          <height>480</height>
           <format>R8G8B8</format>
         </image>
         <clip>
-          <near>0.02</near>
-          <far>300</far>
+          <near>0.1</near>
+          <far>15</far>
         </clip>
         <noise>
           <type>gaussian</type>
@@ -244,5 +248,31 @@
       </camera>
     </sensor>
   </gazebo>
+
+  <!-- Side RGB-D cameras on the links from urdf/cameras.xacro (left D455, right D435i),
+       same names as the RealSense namespaces on the chair. -->
+  <xacro:macro name="sim_side_rgbd" params="name">
+    <gazebo reference="${name}_link">
+      <sensor type="rgbd_camera" name="${name}_sensor">
+        <topic>${name}</topic>
+        <gz_frame_id>${name}_color_optical_frame</gz_frame_id>
+        <update_rate>10.0</update_rate>
+        <camera>
+          <horizontal_fov>1.3962634</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>15</far>
+          </clip>
+        </camera>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+  <xacro:sim_side_rgbd name="mapping_camera"/>
+  <xacro:sim_side_rgbd name="right_camera"/>
 
 </robot>
