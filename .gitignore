@@ -1,0 +1,85 @@
+# ============================================================================
+# ROS2 build artifacts
+# ============================================================================
+build/
+install/
+log/
+
+# ============================================================================
+# Python
+# ============================================================================
+__pycache__/
+.venv-voice/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+
+# ============================================================================
+# Runtime / generated data
+# ============================================================================
+*.csv
+data_logs/
+*.bag
+rosbag2_*/
+
+# ============================================================================
+# Large binary assets (kept out of git history)
+# ============================================================================
+# Isaac Lab USD export (~60 MB, regenerated from URDF; not needed for colcon)
+src/wheelchair_description/urdf/wheelchair_unified.usda
+
+# Gazebo simulation assets (~117 MB of binaries; distributed as the zips in
+# Dp/Simulations/, not in git history). Needed at build/run time, so they stay
+# in the working tree — just untracked.
+src/wheelchair_description/models/
+src/wheelchair_description/photos/
+
+# Duplicates / archives that crept into src/
+src/wheelchair_description (2)/
+src/wheelchair_description.zip
+
+# Side tools / ML pipelines excluded from the navigation workspace repo
+src/cable_trace_deploy/
+src/ground_truth_labeling/
+src/kinoflow_controller/
+src/wheelchair_e2e/
+src/wheelchair_mono_depth/
+
+# ============================================================================
+# Agent / assistant tooling (excluded from public repo)
+# ============================================================================
+CLAUDE.md
+.claude/
+.mcp.json
+
+# ============================================================================
+# Editor / IDE
+# ============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================================================
+# OS
+# ============================================================================
+.DS_Store
+Thumbs.db
+
+# ============================================================================
+# LaTeX auxiliary
+# ============================================================================
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+alltilldoneyet.md 
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
