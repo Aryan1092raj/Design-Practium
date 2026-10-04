@@ -1,306 +1,372 @@
-# Architecture: saved-map autonomous navigation with named places
+# Architecture: voice navigation on a saved map
 
-The chair already maps, localizes on a saved map and drives to a named place, in simulation and on hardware. This document describes how those pieces fit together, what is still missing to make the workflow repeatable on a real chair, and where the VLM and voice layer plugs in. Nothing here changes the motor path: Nav2 and the safety layer remain the only components that command the wheels.
+Phase 1 lets the passenger say "take me to the kitchen" and have the chair drive there on a map that was built earlier by driving the chair manually. The laptop transcribes the command, matches it against the named places saved for that map, and sends the place to Nav2 as a goal. In the Gazebo house simulation this works end to end with typed commands: three named places reached, an unknown place refused, and "stop" cancelling a trip. The microphone path has not been tested yet, and nothing in this document has run on the real chair.
 
-The proposal rests on one idea. A "marker" is a named pose (`x`, `y`, `yaw` in the map frame) stored next to the map it was recorded on. The user drives the chair to a spot once, saves it under a name, and later asks for it by name.
+Nav2 is the only component that moves the wheels. The voice layer picks a destination and can cancel it, but it never publishes a velocity command. The joystick and the hardware emergency stop work independently of all of it.
 
-## 1. What exists today
+| Phase | Scope | State (2026-10-04) |
+|---|---|---|
+| 1 | Voice to named places on a preloaded map, on the laptop, simulation first | `voice_nav.py` built; simulation tested with typed text; microphone and real chair not tested |
+| 2 | Camera and VLM: go to an object the three RGB-D cameras can see | Prototype parked (`vlm_nav.py`, `vlm_server.sh`), not installed |
+| 3 | Move the stack from the laptop to a Jetson Orin Nano Super | Not started |
 
-All of this is in the repository now. The simulation figures come from `AUTONOMOUS_NAV.md`; the real-chair mapping and navigation launches have not been re-tested in this work.
+## 1. What exists
 
 | Piece | Where | State |
 |---|---|---|
-| Manual mapping on the chair | `run_slam` (`wheelchair_slam_mapping.launch.py`) | Drive with the joystick, Ctrl+C saves `.pgm`, `.yaml` and a rosbag to `maps/session_*/` |
-| Navigation on a saved map | `run_nav` (`wheelchair_fusion_nav.launch.py`) | map_server, AMCL, Nav2, velocity smoother, collision monitor |
-| Named places | `src/wheelchair_description/config/locations.yaml` | One global file with three sim places |
-| Go to a place | `scripts/go_to_location.py` (`go_to(name)`) | Sends a `NavigateToPose` goal, returns success as a boolean |
-| Simulation | `gazebo_sim.launch.py nav2:=true map:=...` | Same Nav2 parameters as the real chair, plus `nav2_sim.yaml` overlay |
-| Sim map | `scripts/world_to_map.py` or `slam:=true teleop:=true` | Exact map from the world file, or a map driven by hand |
+| Manual mapping | `run_slam` (`wheelchair_slam_mapping.launch.py`) | Drive with the joystick; Ctrl+C saves `.pgm`, `.yaml` and a rosbag to `maps/session_*/` |
+| Navigation on a saved map | `run_nav` (`wheelchair_fusion_nav.launch.py`) | map_server, AMCL on `/scan_fused`, Nav2, velocity smoother |
+| Named places | `src/wheelchair_description/config/locations.yaml` | One file with three simulation places: bedroom, kitchen, living_room |
+| Go to a place from the shell | `scripts/go_to_location.py` | Sends one `NavigateToPose` goal, exits 0 or 1 |
+| Voice navigation | `scripts/voice_nav.py` | Phase 1 node, section 5 |
+| Simulation | `gazebo_sim.launch.py nav2:=true map:=...` | The chair's Nav2 parameters plus `nav2_sim.yaml`; three RGB-D cameras on the RealSense topic names (`bridge_camera:=true`, off by default) |
+| Simulation map | `scripts/world_to_map.py`, or `slam:=true teleop:=true` | Exact map from the world file, or one driven by hand |
 
 ## 2. System layers
 
-Data flows up through the layers. Only the velocity command flows back down.
+Data flows up through the layers, and only the velocity command flows back down.
 
 ```mermaid
 flowchart TB
-    subgraph Intent["Intent layer (new, vlm-pipeline / voice-pipeline)"]
-        VLM["VLM / voice: 'take me to the kitchen'"]
-        VAL["Intent validator: target must exist in places.yaml"]
+    subgraph Voice["Voice layer (phase 1, voice_nav.py)"]
+        MIC["Laptop microphone"] --> STT["faster-whisper base.en"]
+        STT --> CMD["Command parser:<br/>'go to X' or 'stop'"]
+        CMD --> MATCH["Match X against<br/>the named places"]
     end
 
-    subgraph Places["Place layer (small additions)"]
-        PL["places.yaml (per map)"]
-        GOTO["go_to(name)"]
+    subgraph Places["Place layer"]
+        PL["locations.yaml<br/>(one file per map: planned)"]
     end
 
     subgraph Nav["Navigation layer (exists)"]
-        NAV2["Nav2: planner, controller, behavior tree"]
-        SMOOTH["velocity_smoother"]
-        SAFE["collision monitor"]
+        NAV2["Nav2: SMAC planner, Regulated Pure Pursuit,<br/>behavior tree, recoveries"]
+        SMOOTH["velocity_smoother<br/>0.25 m/s, 0.50 rad/s"]
+        SAFE["collision_monitor<br/>(off by default)"]
     end
 
     subgraph World["World frame (exists)"]
-        MAP["map_server: map.yaml + map.pgm"]
+        MAP["map_server: saved map"]
         AMCL["AMCL: map -> odom"]
     end
 
-    subgraph State["State estimation and sensing (exists)"]
-        EKF["ZUPT / EKF: odom -> base_link"]
-        FUSE["scan fusion: lidar + 3 depth cameras"]
+    subgraph State["Perception and odometry (exists)"]
+        PRISM["PRISM-Nav scan fusion:<br/>LiDAR + 3 depth cameras"]
+        ZUPT["ZUPT odometry:<br/>odom -> base_link"]
     end
 
     subgraph HW["Hardware or Gazebo"]
-        MOT["Arduino motors + encoders / diff_drive plugin"]
-        SENS["RPLidar, RealSense / simulated lidar"]
+        SENS["RPLidar S3, 3 RealSense,<br/>camera IMU, wheel encoders"]
+        MOT["Arduino diff drive<br/>or gz diff_drive"]
     end
 
-    VLM --> VAL --> GOTO
-    PL --> GOTO
-    GOTO -- "NavigateToPose action" --> NAV2
+    PL --> MATCH
+    MATCH -- "NavigateToPose goal" --> NAV2
+    CMD -- "cancel goal" --> NAV2
+    SENS --> PRISM
+    SENS --> ZUPT
+    PRISM --> AMCL
+    PRISM --> NAV2
     MAP --> AMCL
+    ZUPT --> AMCL
     AMCL --> NAV2
-    FUSE --> AMCL
-    FUSE --> NAV2
-    SENS --> FUSE
-    SENS --> EKF
-    EKF --> AMCL
-    NAV2 --> SMOOTH --> SAFE --> MOT
+    NAV2 --> SMOOTH --> MOT
+    SMOOTH -.-> SAFE -.-> MOT
 ```
 
-The only link from the intent layer to the wheels goes through `go_to(name)` and the Nav2 action. The VLM never publishes `/cmd_vel`.
+The collision monitor is off by default in both `run_nav` and the simulation launch (`use_collision_monitor:=false`), so the smoothed command goes straight to the wheels unless it is switched on.
 
-## 3. Workflow: build the map and mark places
+## 3. Perception and odometry under the voice layer
 
-Mapping is manual, as requested. The chair is driven once, the map is saved, then the user drives to each spot and saves it as a named place.
+A named place is a pose on the saved map. It only stays useful if the chair localizes on that map the same way on every run, and two existing parts of the stack provide that. The description below follows the project thesis.
+
+**PRISM-Nav (Pre-SLAM Integrated Scan Merging for Navigation).** On a wheelchair the occupant's body blocks most sensor positions. Only three sightlines clear it: one above head height looking forward, and one at armrest height on each side. Depth cameras at those three points give up to 259° of height-aware coverage. Their depth is height-filtered, projected into the LiDAR's angular bins, and merged with the LiDAR scan by element-wise minimum, F_k = min(L_k, min_i O_i,k), before SLAM. In `scan_fusion_v9` the height window is 0.10 to 1.80 m and a bin needs at least two camera points. Because the merge happens before SLAM, the saved map, the costmaps and AMCL all work on one geometry, including tables and shelves above the LiDAR plane. In the thesis trials in a research laboratory and hospital corridors, PRISM-Nav completed 40 of 40 runs without a collision and reached 33 of 40 goals, against 20 collisions in 40 runs for the LiDAR-only baseline (Fisher's exact test, p ≈ 7.8 × 10⁻⁸).
+
+```mermaid
+flowchart LR
+    L["RPLidar S3"] --> F["laser filter<br/>scan_filtered"]
+    C1["Front D455<br/>above head, forward"] --> H["Height filter<br/>0.10 to 1.80 m"]
+    C2["Left D455<br/>armrest, +90 deg"] --> H
+    C3["Right D435i<br/>armrest, -90 deg"] --> H
+    H --> P["Project into LiDAR bins<br/>at least 2 points per bin"]
+    F --> M["Per-bin minimum<br/>F_k = min(L_k, min_i O_i,k)"]
+    P --> M
+    M --> S["fused scan<br/>scan_fused"]
+    S --> SLAM["SLAM Toolbox<br/>(mapping)"]
+    S --> AM["AMCL + costmaps<br/>(navigation)"]
+```
+
+For voice navigation this means the map a place is saved on already contains the elevated obstacles around it, so the planner routes around them and AMCL can use them as landmarks.
+
+**ZUPT odometry.** The chair stands still most of the time. A stationarity detector that requires the encoders and the accelerometer to agree clamps the velocity states and recalibrates the gyroscope bias whenever the chair stops, which bounds the heading drift that would otherwise build up between trips. It publishes `odom -> base_link`, which SLAM, AMCL and the controller all depend on. Per the README, `zupt_node` runs during navigation and the six-state `robust_ekf_zupt_node` during mapping.
+
+## 4. Workflow: build the map and mark places
+
+The map is built once by driving the chair manually. Then the user drives to each spot that should become a destination and saves it under a name.
 
 ```mermaid
 flowchart TD
-    A["Start run_slam<br/>(or sim: slam:=true teleop:=true)"] --> B["Keep chair still ~3 s<br/>IMU gyro bias"]
-    B --> C["Drive every area slowly<br/>return to start (loop closure)"]
+    A["Start run_slam<br/>(sim: slam:=true teleop:=true)"] --> B["Keep the chair still ~3 s<br/>(IMU gyro bias)"]
+    B --> C["Drive every area slowly,<br/>return to the start (loop closure)"]
     C --> D["Ctrl+C: map saved to<br/>maps/session_YYYYMMDD_HHMMSS/"]
     D --> E{"PGM check:<br/>thin straight walls,<br/>no ghost walls?"}
     E -- "no" --> A
     E -- "yes" --> F["Start run_nav with this map"]
-    F --> G["Localize: chair at map origin<br/>or RViz 2D Pose Estimate"]
+    F --> G["Localize: chair at the map origin,<br/>or RViz 2D Pose Estimate"]
     G --> H["Drive to a spot with the joystick"]
-    H --> I["save_location.py name<br/>(proposed): reads /amcl_pose,<br/>appends to places.yaml"]
+    H --> I["Save the pose under a name<br/>(manual today, save_location.py planned)"]
     I --> J{"More places?"}
     J -- "yes" --> H
-    J -- "no" --> K["Map folder holds map + places.yaml"]
+    J -- "no" --> K["Map + named places ready<br/>for voice navigation"]
 ```
 
-Today steps H to I are manual: read `/amcl_pose`, compute `yaw = 2 * atan2(z, w)`, edit `locations.yaml`. `save_location.py` automates exactly that, and nothing more.
+Saving a place is manual today: `ros2 topic echo --once /amcl_pose --field pose.pose`, compute `yaw = 2 * atan2(z, w)`, and add `name: {x, y, yaw}` to `locations.yaml`. Each spot needs about 1.3 m of clearance from furniture. Closer spots failed in the simulation with "Start occupied", because the chair's footprint plus the inflation radius covered the goal.
 
-## 4. Workflow: go to a place
+## 5. Phase 1: voice to a named place
+
+`voice_nav.py` is one long-running ROS 2 node that does the whole chain, from microphone to Nav2 goal to spoken reply.
+
+```mermaid
+flowchart TD
+    MIC["arecord, 16 kHz mono<br/>default ALSA device"] --> GATE{"Louder than 3x the<br/>background noise?"}
+    GATE -- "no" --> MIC
+    GATE -- "yes" --> REC["Record until 0.75 s of silence<br/>(9 s at most)"]
+    REC --> STT["faster-whisper base.en, CPU, int8<br/>prompted with the place names"]
+    STT --> TXT["Transcript"]
+    TYPED["Typed text on<br/>/voice/transcript"] --> TXT
+    TXT --> ISSTOP{"Contains stop,<br/>halt or cancel?"}
+    ISSTOP -- "yes" --> CANCEL["Cancel the Nav2 goal,<br/>say 'Stopping.'"]
+    ISSTOP -- "no" --> ISGO{"'go / take me / drive ...<br/>to X'?"}
+    ISGO -- "no" --> IGNORE["Ignore it<br/>(ordinary conversation)"]
+    ISGO -- "yes" --> FUZZ{"X matches a place?<br/>rapidfuzz score >= 85"}
+    FUZZ -- "no" --> UNKNOWN["Say: I don't know X.<br/>I know bedroom, kitchen, ..."]
+    FUZZ -- "yes" --> BUSY{"Already driving?"}
+    BUSY -- "yes" --> REFUSE["Say: I am already moving.<br/>Say stop first."]
+    BUSY -- "no" --> ANNOUNCE["Say: Going to the X.<br/>Say stop to cancel.<br/>Wait 2 s"]
+    ANNOUNCE --> GOAL["NavigateToPose to the<br/>saved x, y (map frame)"]
+    GOAL --> RES{"Result"}
+    RES -- "succeeded" --> FACE["Spin to the saved heading"]
+    FACE --> ARRIVED["Say: Arrived at the X."]
+    RES -- "failed" --> FAILED["Say: I could not reach the X."]
+```
+
+While the chair is speaking (with `spd-say`), the microphone thread throws audio away, so the chair does not react to its own words, such as "say stop to cancel".
+
+The turn at the end exists because the chair's Nav2 configuration ignores the goal heading (`yaw_goal_tolerance: 6.28`). After arriving, the node asks the behavior server's Spin action to turn to the saved yaw when the error is above 0.3 rad. Spin checks for collisions and can refuse next to furniture; the chair then keeps the heading it arrived with.
 
 ```mermaid
 sequenceDiagram
-    actor U as User
-    participant V as VLM / voice
-    participant G as go_to(name)
-    participant P as places.yaml
-    participant N as Nav2 (NavigateToPose)
-    participant S as smoother + collision monitor
-    participant M as Motors / Gazebo
+    actor U as Passenger
+    participant V as voice_nav.py
+    participant N as Nav2
+    participant M as Wheels
 
-    U->>V: "go to the kitchen"
-    V->>G: intent {action: go_to, target: kitchen}
-    G->>P: look up kitchen
-    P-->>G: x, y, yaw (or unknown name: reject)
-    G->>G: check AMCL is localized (proposed)
-    G->>N: goal pose in map frame
-    N->>S: /cmd_vel plan
-    S->>M: limited velocity (max 0.25 m/s, 0.35 rad/s)
-    N-->>G: SUCCEEDED / FAILED
-    G-->>V: boolean result
-    V-->>U: "arrived" or "could not reach it"
+    U->>V: "take me to the kitchen"
+    V->>V: transcribe, match "kitchen"
+    V-->>U: "Going to the kitchen. Say stop to cancel."
+    V->>N: NavigateToPose (4.64, -1.98)
+    N->>M: smoothed velocity commands
+    alt passenger says stop
+        U->>V: "stop"
+        V->>N: cancel goal
+        N->>M: zero velocity
+        V-->>U: "Stopping."
+    else goal reached
+        N-->>V: SUCCEEDED
+        V->>N: Spin to yaw 0.99
+        V-->>U: "Arrived at the kitchen."
+    end
 ```
 
-A rejected name, a lost localization or a failed goal all return `False`. The chair stops where Nav2 leaves it; the intent layer only reports the result.
+The node's interfaces:
 
-## 5. Per-map layout
+| Interface | Type | Direction | Use |
+|---|---|---|---|
+| `/voice/transcript` | `std_msgs/String` | subscribed | Typed commands for testing; the microphone path calls the same handler directly |
+| `/voice/status` | `std_msgs/String` | published | Every sentence the chair speaks |
+| `navigate_to_pose` | `nav2_msgs/action/NavigateToPose` | action client | Drive to the place |
+| `spin` | `nav2_msgs/action/Spin` | action client | Turn to the saved heading |
+| TF `map -> base_link` | transform | read | Current heading, for the turn |
 
-Places only make sense on the map they were recorded on, so they live in the same folder as that map. This replaces the single global `locations.yaml`.
+Five rules keep this safe for a seated passenger, and all five are in the code:
+
+1. **Closed vocabulary.** Only names in the places file can become goals. Free text never becomes coordinates.
+2. **Announce before moving.** The chair says where it is going and waits 2 s, during which "stop" cancels the trip.
+3. **Stop has its own path.** It is matched by keyword on the raw transcript, before and independent of the place matcher, and cancels the active goal at any point in the trip.
+4. **One goal at a time.** A new destination during a trip is refused until the passenger says stop.
+5. **Nav2 drives.** The node only sends and cancels goals.
+
+`docs/examples/vlm_intent.example.json` sketches a JSON contract for a later split into separate intent and navigation nodes. Phase 1 does not use it.
+
+### Running it in the simulation
+
+One-time setup of the Python environment. `--system-site-packages` keeps ROS 2's `rclpy` visible inside it, and the first run downloads the whisper `base.en` model from Hugging Face.
+
+```bash
+cd ~/wheelchair_nav
+/usr/bin/python3 -m venv --system-site-packages .venv-voice
+.venv-voice/bin/pip install faster-whisper rapidfuzz
+```
+
+Every simulation terminal needs `source setup.bash --skip` and `export FASTRTPS_DEFAULT_PROFILES_FILE=$HOME/fastdds_udp.xml` (see `AUTONOMOUS_NAV.md`, section 1). Then:
+
+```bash
+# terminal 1: Gazebo + Nav2 on the saved house map
+ros2 launch wheelchair_description gazebo_sim.launch.py \
+  world_name:=small_house use_rviz:=false nav2:=true \
+  map:=$HOME/wheelchair_nav/maps/small_house_world.yaml
+
+# terminal 2: publish the start pose (AUTONOMOUS_NAV.md, section 2.2), then
+source .venv-voice/bin/activate
+ros2 run wheelchair_description voice_nav.py
+
+# speak, or type a command from a third terminal
+ros2 topic pub --once /voice/transcript std_msgs/msg/String "{data: 'take me to the kitchen'}"
+```
+
+## 6. Simulation results
+
+Tested on 2026-10-04 in the `small_house` world on `maps/small_house_world.yaml`, with commands typed to `/voice/transcript`. "Error" is the distance between where AMCL placed the chair and where Gazebo actually had it.
+
+| Command | Expected | Result |
+|---|---|---|
+| "take me to the bedroom" | Drive to the bedroom | Arrived, error 0.06 m. The turn to the saved heading was refused by Nav2 ("Collision Ahead") next to furniture |
+| "take me to the kitchen" | Drive to the kitchen | Arrived and turned to the saved heading (1.04 rad, saved 0.99), error 0.34 m |
+| "please take me to the living room" | Drive to the living room | Arrived, error 0.30 m |
+| "go to the garage" | Refuse | "I don't know garage. I know bedroom, kitchen, living room." |
+| "stop" during a trip | Cancel | Goal cancelled, "Stopping." |
+| A new place during a trip | Refuse | "I am already moving. Say stop first." |
+
+Before these runs, AMCL ended up more than 1 m from the true position after a few trips, once with its heading more than 130° off. The cause was in the simulation's odometry: Gazebo's wheel odometry drifted about 45° in heading over one trip (castor slip), and the simulation EKF fused the wheels' x and y position, so the position error grew with every turn. The fix, in `gazebo_sim.launch.py` only, makes the simulation EKF take forward speed from the wheels and heading from the IMU. The real chair's configuration is unchanged. The 7 percent distance scale error in the simulated odometry, noted in `AUTONOMOUS_NAV.md`, was not re-measured.
+
+## 7. Simulation parity
+
+The simulation runs the same navigation chain with a few substitutions, so the voice workflow can be tested without hardware.
+
+```mermaid
+flowchart LR
+    subgraph Real["Real chair"]
+        R1["RPLidar + 3 RealSense"] --> R2["PRISM-Nav<br/>scan_fused"]
+        R3["ZUPT odometry"]
+        R4["Arduino diff drive"]
+    end
+    subgraph Sim["Gazebo small_house"]
+        S1["Simulated lidar"] --> S2["raw scan"]
+        S5["3 simulated RGB-D cameras<br/>(bridged, not fused)"]
+        S3["robot_localization EKF<br/>wheel speed + IMU heading"]
+        S4["gz diff_drive"]
+    end
+    subgraph Shared["Identical in both"]
+        C1["nav2_params_3cam_v29.yaml<br/>+ behavior tree"]
+        C2["voice_nav.py"]
+        C3["places file format"]
+    end
+    R2 --> Shared
+    R3 --> Shared
+    S2 --> Shared
+    S3 --> Shared
+    Shared --> R4
+    Shared --> S4
+```
+
+Differences that matter:
+
+- **Time.** The simulation runs on simulated time.
+- **Scan.** AMCL and the costmaps read the raw `/scan`, because PRISM-Nav fusion does not run in the simulation. The three simulated cameras now publish on the RealSense topic names, so fusion could be added to the simulation later, but phase 1 does not use them.
+- **Odometry.** The simulation uses the `robot_localization` EKF described in section 6, while the chair uses ZUPT odometry.
+- **Parameters.** `nav2_sim.yaml` is layered over the chair's Nav2 parameters, including a 0.65 m inflation radius.
+- **Start pose.** The chair spawns at the world origin, so AMCL needs one `/initialpose` message before the first goal.
+
+## 8. Per-map places (planned)
+
+Places only make sense on the map they were recorded on. Today `voice_nav.py` and `go_to_location.py` read the single `locations.yaml`, so switching maps without switching that file would send the chair to the wrong spots. The plan is to keep the places next to their map:
 
 ```mermaid
 flowchart LR
     ROOT["maps/"] --> S1["session_20261004_101500/"]
     ROOT --> S2["small_house_world/ (sim)"]
-    S1 --> S1A["map.yaml"]
-    S1 --> S1B["map.pgm"]
+    S1 --> S1A["map.yaml + map.pgm"]
     S1 --> S1C["places.yaml"]
     S1 --> S1D["pose graph + rosbag"]
-    S2 --> S2A["small_house_world.yaml / .pgm"]
+    S2 --> S2A["small_house_world.yaml + .pgm"]
     S2 --> S2B["places.yaml"]
 ```
 
-`go_to` should find the file from the map that is actually loaded, so a place list can never be applied to the wrong map. Reading the `yaml_filename` parameter of the `/map_server` node gives that path without a new argument. A `--places <file>` override stays available for tests. See `docs/examples/places.example.yaml` for the file format.
+The node would find the file from the map that is actually loaded, by reading the `yaml_filename` parameter of `/map_server`, so a place list can never be applied to the wrong map. A `--places <file>` override stays available for tests. `docs/examples/places.example.yaml` shows the format.
 
-## 6. Simulation parity
+## 9. Next steps for phase 1
 
-The simulation runs the same chain with a few substitutions, so the whole workflow above can be tested without hardware.
+Each step can be checked in the simulation before it goes near the chair.
 
-```mermaid
-flowchart LR
-    subgraph Real["Real chair"]
-        R1["RPLidar + 3 RealSense"] --> R2["/scan_fused"]
-        R3["Arduino diff drive"]
-        R4["run_slam / run_nav"]
-    end
-    subgraph Sim["Gazebo small_house"]
-        S1["simulated lidar"] --> S2["/scan (raw)"]
-        S3["gz diff_drive plugin"]
-        S4["gazebo_sim.launch.py nav2:=true"]
-    end
-    subgraph Shared["Identical in both"]
-        C1["nav2_params_3cam_v29.yaml"]
-        C2["go_to_location.py"]
-        C3["places.yaml format"]
-        C4["intent layer (VLM)"]
-    end
-    R2 --> Shared
-    S2 --> Shared
-    Shared --> R3
-    Shared --> S3
-```
+1. **Microphone test on the laptop.** Run `voice_nav.py` with the simulation and speak the six commands from section 6. Check: the same results as typed. If it misses words or reacts to background noise, tune the energy gate (three times the noise floor, minimum 0.01).
+2. **`save_location.py <name>`.** Read one `/amcl_pose` message, convert the quaternion to yaw, append the entry to the active map's places file, and warn when the pose is inside the inflated costmap. Check: save a place in the simulation and reach it by voice.
+3. **Per-map places** as in section 8. Check: two maps with different places, each answering with its own list.
+4. **Start pose from the map.** Save a `home` place when mapping starts and publish it to `/initialpose` when `run_nav` starts, which removes the manual RViz step. Check: restart the simulation and confirm AMCL converges without RViz.
+5. **Localization guard.** Refuse a goal while the AMCL covariance is above a threshold. Check: publish a wrong start pose and confirm the chair says so instead of driving.
+6. **Real chair.** Build a map with `run_slam`, mark places, then run `run_nav` and `voice_nav.py`. Run the first trips with an empty chair, in open space, with a hand on the emergency stop.
 
-Differences that matter: the sim uses simulated time, feeds the raw `/scan` to AMCL and the costmaps in place of `/scan_fused`, and layers `nav2_sim.yaml` over the real parameters. It spawns the chair at the world origin, so AMCL needs one `/initialpose` message before the first goal. Simulation odometry is about 7 percent off in scale and has not been calibrated, so sim travel times do not predict real ones.
+## 10. Software and models
 
-## 7. What to build
+| Role | Phase 1 (in use) | Option if needed |
+|---|---|---|
+| Robot software | ROS 2 Jazzy, Nav2, SLAM Toolbox, AMCL | |
+| Simulation | Gazebo (`gz sim` 8) with `ros_gz_bridge` | |
+| Audio capture | `arecord`, 16 kHz mono, default ALSA device (laptop microphone) | USB headset or close-talk microphone |
+| Speech detection | Energy gate in `voice_nav.py` for start and end; faster-whisper's built-in Silero VAD trims silence | Silero VAD for start and end too, for noisy rooms |
+| Wake word | None; only "go to ..." and "stop" phrases do anything | openWakeWord or a push-to-talk button if it triggers falsely |
+| Speech to text | faster-whisper `base.en`, int8 on the CPU, prompted with the place names | `small.en`; CUDA on the Jetson |
+| Command matching | Regular expressions plus `rapidfuzz` (score at least 85) | A small LLM (for example Qwen2.5 1.5B with a JSON grammar) if phrasing varies too much |
+| Text to speech | `spd-say` (speech-dispatcher, preinstalled on Ubuntu) | Piper |
+| Python environment | `.venv-voice`, created with `--system-site-packages` | |
+| VLM (phase 2) | Qwen2.5-VL 3B, served by the llama.cpp server bundled with Ollama, on the GPU | |
 
-Six additions, in this order. Steps 1 to 4 are small and independent; steps 5 and 6 are the voice layer from section 10. All are testable on the sim.
+The laptop has an RTX 4050 Laptop GPU with 6 GB, 14 GB of RAM and a Ryzen 7 7445HS. With Gazebo and Nav2 running, RAM was the tight resource (about 11 GB in use, with swap active). Phase 1 runs speech to text on the CPU and leaves the GPU free.
 
-1. **`save_location.py <name>`** reads one `/amcl_pose` message, converts the quaternion to yaw and appends the entry to the active map's `places.yaml`. Check: save a place in the sim, restart `go_to_location.py` on it, confirm `SUCCEEDED`.
-2. **Per-map places in `go_to_location.py`.** Resolve the places file from the loaded map, with `--places` as an override, and add `--list`. Check: run the same command against two maps with different places and confirm each list differs.
-3. **Initial pose from the map.** Save a `home` place when mapping starts (the origin) and publish it to `/initialpose` after `run_nav` starts. This removes the manual RViz step. Check: restart the sim, confirm AMCL converges without RViz.
-4. **Localization guard in `go_to`.** Refuse to send a goal while the AMCL covariance is above a threshold. Check: publish a bad initial pose in the sim and confirm the goal is refused instead of attempted.
+## 11. Phase 2: camera and VLM (parked)
 
-5. **Voice nodes** (`stt_node`, `intent_node`, `place_navigator`) as described in section 10. Check: publish typed text to `/voice/transcript` in the sim and confirm the chair arrives, with no microphone involved. Add the microphone only after that works.
-6. **Stop path.** A "stop" utterance, handled without the LLM, cancels the active Nav2 goal. Check: say or publish "stop" mid-trip in the sim and confirm the chair halts.
-
-The intent layer on this branch then needs only `list_places()` (to give the VLM its vocabulary) and `go_to(name)`. The JSON contract is in `docs/examples/vlm_intent.example.json`.
-
-## 8. Physical markers (optional, later)
-
-The named poses above are virtual markers, and they need no hardware. If the chair drifts or restarts away from the origin, fixed visual tags (AprilTag or ArUco) at a few known spots could reset AMCL's pose when seen by a RealSense camera. This costs a detector node and a tag-to-map calibration step, so it is only worth adding if AMCL loses the chair in practice. Nothing in the first four steps depends on it.
-
-## 9. Risks and open questions
-
-- **Real chair, not re-tested.** `run_slam` and `run_nav` were not run in the simulation work. Step 1 should be proven on the chair before the VLM layer relies on it.
-- **Odometry offset.** The sim needed a 0.32 m axle-to-`base_link` shift in its odometry. The real chair may have the same offset; this is unchecked.
-- **Clearance.** Places closer than about 1.3 m to furniture failed with "Start occupied" in the sim, because the 0.9 x 0.7 m footprint plus inflation covered the goal. `save_location.py` should warn when the saved pose is inside the inflated costmap.
-- **`go_to` uses a new node per call** and expects `rclpy.init()` first. The Python import path from the VLM process is untested; wrap it in a small ROS node or service if the VLM runs in a separate process.
-- **`run_nav` kills all ROS 2 processes** at start (`pkill -9 -f ros2`). It must not be launched while the simulation is running.
-
-## 10. Voice-driven navigation
-
-A spoken command becomes a place name, and the place name goes through the same `go_to(name)` path as everything else. The voice layer adds three ROS 2 nodes and no new way to move the chair.
-
-```mermaid
-flowchart LR
-    MIC["Microphone"] --> VAD["VAD: speech start / end"]
-    VAD --> WAKE["Wake word"]
-    WAKE --> STT["Speech to text"]
-    STT -- "/voice/transcript" --> INT["intent_node"]
-    INT --> FZ{"Matches a place<br/>by fuzzy match?"}
-    FZ -- "yes" --> CONF["Confirm with passenger"]
-    FZ -- "no" --> LLM["Small LLM, JSON output<br/>(optional stage 2)"]
-    LLM --> CHK{"Target in list_places()?"}
-    CHK -- "no" --> REJ["Say: I don't know that place"]
-    CHK -- "yes" --> CONF
-    CONF -- "yes" --> NAVN["place_navigator"]
-    CONF -- "no / timeout" --> CANCEL["Drop the command"]
-    NAVN -- "NavigateToPose" --> NAV2["Nav2 (exists)"]
-    NAV2 -- "result" --> NAVN
-    NAVN --> TTS["Text to speech: arrived / failed"]
-    STOP["'stop' keyword<br/>(no LLM, always on)"] -- "cancel goal" --> NAVN
-```
-
-The nodes and their interfaces:
-
-| Node | Input | Output | Notes |
-|---|---|---|---|
-| `stt_node` | Microphone audio | `/voice/transcript` (`std_msgs/String`) | Starts only after the wake word; VAD ends the utterance |
-| `intent_node` | `/voice/transcript`, places list | `/voice/intent` (JSON string, format in `docs/examples/vlm_intent.example.json`) | Fuzzy match first; the LLM runs only when that fails |
-| `place_navigator` | `/voice/intent`, `places.yaml` | `NavigateToPose` goal, `/voice/status` text for TTS | One long-lived node that wraps `go_to`; replaces creating a node per call |
-
-Four rules keep this safe for a seated passenger:
-
-1. **Closed vocabulary.** The intent must name a key in `places.yaml`. Free text never becomes coordinates.
-2. **Confirmation before motion.** The chair says "Going to the kitchen, say stop to cancel" and waits a few seconds before it moves.
-3. **Stop has its own path.** The stop keyword is matched on the raw transcript or a dedicated keyword spotter, never on the LLM output, and cancels the Nav2 goal. The joystick and the hardware emergency stop stay independent of all of this.
-4. **Typed input is a first-class source.** `/voice/transcript` accepts text from any publisher, so the whole chain runs in the simulation with no audio.
-
-## 11. Models and software
-
-These are proposals for each role, chosen to run on the laptop now and on the Jetson later. None has been benchmarked on this project; the benchmark gates in section 12 decide what ships.
-
-| Role | Proposed choice | Why | Fallback |
-|---|---|---|---|
-| Robot framework | ROS 2 Jazzy, Nav2, SLAM Toolbox, AMCL | Already in use | None |
-| Simulation | Gazebo (`gz sim`) with `ros_gz` bridges | Already in use | None |
-| Voice activity detection | Silero VAD | Small, runs on CPU | WebRTC VAD |
-| Wake word | openWakeWord | Open source, runs on CPU, trainable for a custom phrase | Push-to-talk button |
-| Speech to text | faster-whisper, `small.en` | Good accuracy on short commands, CUDA and CPU backends | `base.en`; whisper.cpp if the Jetson build is easier |
-| Stage 1 intent | `rapidfuzz` match against place names plus a few verb patterns ("go to", "take me to") | No model, no latency, deterministic | None needed |
-| Stage 2 intent (optional) | Qwen2.5 1.5B Instruct, 4-bit GGUF, run with `llama.cpp` and a JSON grammar | Handles free phrasing; the grammar forces valid JSON | A 3B model if 1.5B misses too many phrasings |
-| Text to speech | Piper | Offline, fast on CPU | `espeak-ng` |
-| Audio capture | USB microphone or headset, `sounddevice` | Close-talk mic is far more reliable than a laptop mic in a moving chair | USB array microphone |
-| Glue | Python `rclpy` nodes, one `voice_config.yaml` | Matches the existing launch style | None |
-| VLM (section 13, later) | Qwen2.5-VL 3B Instruct, or SmolVLM2 / moondream2 if memory is tight | Small enough for 8 GB shared memory | A detector plus depth (YOLO-World or Grounding DINO) if VLM boxes are unreliable |
-
-## 12. Compute: laptop now, Jetson Orin Nano Super later
-
-Everything runs on the laptop first. Moving to the Jetson then means changing a config profile, not code.
-
-```mermaid
-flowchart TB
-    subgraph Cfg["voice_config.yaml"]
-        P1["profile: laptop"]
-        P2["profile: jetson"]
-    end
-    subgraph Nodes["Same ROS 2 nodes in both"]
-        N1["stt_node"] 
-        N2["intent_node"]
-        N3["place_navigator"]
-        N4["Nav2 stack"]
-    end
-    P1 --> Nodes
-    P2 --> Nodes
-    Nodes --> HW1["Laptop: Gazebo sim, or chair over USB"]
-    Nodes --> HW2["Jetson: chair, 3 RealSense, RPLidar, Arduino"]
-```
-
-A profile sets the model name, the backend (CUDA or CPU), the quantization and whether the LLM stage is on. The nodes read nothing else about the platform.
-
-The Jetson Orin Nano Super has 8 GB of memory shared by CPU and GPU, and Nav2, the three RealSense streams and scan fusion already use a large part of it. Rough, unmeasured planning figures: `small.en` speech to text about 1 GB, a 1.5B 4-bit LLM about 1 to 1.5 GB, a 3B 4-bit VLM about 2 to 3 GB. The plan that follows from this:
-
-1. Keep the VLM unloaded until it is asked for, and unload it afterwards.
-2. Run the LLM stage only when the fuzzy match fails.
-3. Measure free memory with Nav2 and all cameras running before choosing model sizes.
-
-Benchmark gates before the Jetson move, with targets to be agreed: speech to text latency for a 3 second command, time from end of speech to the first motion command, peak memory with the full stack up, and the `go_to` success rate over a fixed list of spoken phrases.
-
-Open question: ROS 2 Jazzy targets Ubuntu 24.04, and the JetPack release available for the Orin Nano may ship a different Ubuntu version. Check this first. If they differ, run the ROS stack in a Jazzy container on the Jetson.
-
-## 13. One-shot VLM with the camera (later, not in scope now)
-
-The VLM extends the same pipeline with one extra source of intent: the camera frame. It is written down here so the earlier layers leave room for it, and nothing in sections 1 to 12 depends on it.
+Phase 2 adds one more kind of destination: an object the chair can see. "Take me to the sofa" works even when no place called sofa was saved. The prototype is kept in `scripts/vlm_nav.py` with `scripts/vlm_server.sh`; neither is installed or launched.
 
 ```mermaid
 flowchart TD
-    I["Instruction + camera frame<br/>'go to the chair by the window'"] --> V["VLM"]
-    V --> Q{"Answer type"}
-    Q -- "known place" --> P["place name from list_places()"]
-    Q -- "object in view" --> B["bounding box"]
-    P --> G["go_to(name)"]
-    B --> D["Depth at box center -> 3D point"]
-    D --> T["TF camera -> map -> candidate goal pose"]
-    T --> F{"Cell is free and known<br/>in the costmap?"}
-    F -- "no" --> R["Say: I can't reach that"]
-    F -- "yes" --> C["Confirm with passenger"]
-    C --> N["NavigateToPose (Nav2)"]
-    G --> N
+    I["'take me to the sofa'<br/>(not a saved place)"] --> LOOK["Ask the VLM for a box<br/>in each of the 3 RGB-D views"]
+    LOOK --> VER{"Box found and crop check<br/>'Is this a sofa?' says yes?"}
+    VER -- "no" --> TURN{"Turned around yet?"}
+    TURN -- "no" --> SPIN["Spin 180 deg, look again"] --> LOOK
+    TURN -- "yes" --> NF["Say: I can't find the sofa"]
+    VER -- "yes" --> DEP["Depth from the box centre<br/>-> 3D point -> map frame (TF)"]
+    DEP --> STAND["Goal 1.5 to 2.4 m short of the object,<br/>on a free global costmap cell"]
+    STAND --> FAR{"More than 4 m away?"}
+    FAR -- "yes" --> NEAR["Drive closer, look again"] --> LOOK
+    FAR -- "no" --> GO["Announce, NavigateToPose,<br/>turn to face the object"]
 ```
 
-The rules from section 10 carry over. The VLM only proposes a target; it does not command motion. A target must be a known place or a free, mapped cell within a maximum distance, and the passenger confirms before the chair moves. The first VLM milestone is the simpler half: asking the VLM to pick a known place from the current view, which reuses `go_to(name)` unchanged. The object-to-goal half needs the camera extrinsics in TF and is the larger piece of work.
+Findings from one simulation session on 2026-10-04:
+
+- **Speed.** Ollama ran the VLM's image encoder on the CPU with at least 1024 image tokens, which took about 60 s per frame. Running the llama.cpp server that ships with Ollama, with the encoder on the GPU and 64 to 512 image tokens (`vlm_server.sh`), brought it to 0.3 to 0.6 s per frame after a 22 s first call.
+- **"go to the sofa".** The crop check rejected two wrong boxes, the right camera found the sofa 3.0 m away, and the chair drove there.
+- **"go to the refrigerator".** The crop check accepted a wrong object at (0.64, -3.45); the real refrigerator is at (8.70, -1.03). The 3B model's yes or no answer is not a reliable filter on its own.
+- **Localization.** The AMCL drift described in section 6, since fixed for the simulation, made object positions unreliable during that session.
+
+Decisions already made for phase 2: the front camera faces forward over the passenger, the simulated cameras publish on the RealSense topic names, and the side cameras will need color. On the chair the side cameras are depth only today (`enable_color: false` in `multi_camera.launch.py`), so turning color on costs USB bandwidth. Still open: how to reject wrong objects. The candidates are a stricter check that shows the box in the full image, an open-vocabulary detector such as YOLO-World with the VLM only confirming, or a larger VLM.
+
+The phase 1 rules carry over: the VLM only proposes a target, the chair announces it before moving, "stop" always works, and Nav2 does the driving.
+
+## 12. Phase 3: Jetson Orin Nano Super
+
+The Jetson Orin Nano Super has 8 GB of memory shared by the CPU and GPU, and Nav2, the three RealSense streams and PRISM-Nav fusion already use a large part of it. Phase 1 needs only whisper `base.en` and the node itself; the phase 2 VLM should load only when a command needs it and unload afterwards. Before choosing model sizes, measure free memory with Nav2 and all three cameras running. Today the model name and device are constants in `voice_nav.py`; a small per-platform config file is the planned change for this move.
+
+Open question: ROS 2 Jazzy targets Ubuntu 24.04, and the JetPack release for the Orin Nano may ship a different Ubuntu version. If they differ, run the ROS stack in a Jazzy container on the Jetson.
+
+## 13. Physical markers (optional)
+
+The named places are virtual markers and need no hardware. If AMCL loses the chair in practice, for example after a restart away from the map origin, fixed visual tags (AprilTag or ArUco) at a few known spots could reset its pose when a camera sees them. That costs a detector node and a calibration step from tag to map, so it is only worth adding if localization fails in real use.
+
+## 14. Risks and open questions
+
+- **Microphone not tested.** A laptop microphone on a moving chair picks up motor and room noise, and the energy gate is basic. A headset may be needed.
+- **Real chair not re-tested.** `run_slam`, `run_nav` and `voice_nav.py` have not run on the chair as part of this work.
+- **Collision monitor off by default** in `run_nav` and in the simulation. Decide whether voice trials on the chair run with `use_collision_monitor:=true`.
+- **Build.** Commit `bab6a1a` added a copy of `wheelchair_description`'s `CMakeLists.txt` at the repository root. A plain `colcon build`, which is what `source setup.bash` runs, now treats the root as the only package (`colcon list` prints `wheelchair_description .`) and skips everything under `src/`; with an existing `build/` folder it fails with a CMake cache mismatch. `colcon build --base-paths src --symlink-install` builds correctly.
+- **Clearance.** Places closer than about 1.3 m to furniture can fail with "Start occupied".
+- **Final heading.** Nav2's Spin can refuse the turn to the saved heading next to furniture, as it did at the bedroom.
+- **Odometry on the chair.** The simulation needed a 0.32 m axle to `base_link` shift in its odometry; whether the chair has the same offset is unchecked.
+- **`run_nav` kills every ROS 2 process** at start (`pkill -9 -f ros2`), so it must not be launched while the simulation is running.

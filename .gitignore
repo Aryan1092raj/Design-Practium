@@ -9,6 +9,7 @@ log/
 # Python
 # ============================================================================
 __pycache__/
+.venv-voice/
 *.py[cod]
 *.egg-info/
 .eggs/
@@ -78,3 +79,7 @@ Thumbs.db
 *.fls
 *.fdb_latexmk
 alltilldoneyet.md 
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json

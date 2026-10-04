@@ -128,6 +128,16 @@ run_slam use_fused_slam:=false  # lidar-only (slam_toolbox_motion_compensated_v2
 run_slam hospital_mode:=true    # long-range corridor config
 ```
 
+**Voice.** With `run_nav` (or the simulation) up, `voice_nav.py` turns a spoken
+"take me to the kitchen" into a Nav2 goal for a named place, and "stop" cancels it.
+Setup and usage are in `AUTONOMOUS_NAV.md` (section 2.7); the design is in
+`docs/architecture.md`.
+
+```bash
+source .venv-voice/bin/activate
+ros2 run wheelchair_description voice_nav.py
+```
+
 ## Pipeline
 
 **Perception.** `/scan` passes a `laser_filters` chain (range + speckle; the 0.15 m

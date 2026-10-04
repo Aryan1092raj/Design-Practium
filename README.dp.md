@@ -109,15 +109,25 @@ The full procedure, including the USB udev rules and port aliases, is in section
 
 The real-chair pipeline has not been re-tested since the simulation work. Run the first trips with an empty chair, in open space, with a hand on the emergency stop.
 
-## Planned work
+## Voice navigation
 
-Voice control and place-based autonomous navigation on a preloaded map are next.
+Say "take me to the kitchen" and the chair drives there on the preloaded map. `voice_nav.py` transcribes the command on the laptop with faster-whisper, matches it against the named places in `locations.yaml`, and sends the place to Nav2 as a goal. "Stop" cancels the trip at any point. The voice layer never commands the motors itself; Nav2 does.
 
-- **Map and places.** The map is built once by driving the chair manually with `run_slam`, then saved and preloaded for every later run. Named places on that map are stored in `locations.yaml`.
-- **Fixed markers.** Fixed markers placed in the environment will help the chair localize and mark its destinations. The marker type and how they tie into AMCL and `locations.yaml` are still to be decided.
-- **Voice integration.** A spoken command such as "take me to the kitchen" will be turned into a place name and passed to `go_to(name)` in `go_to_location.py`, the same function the command line uses. The voice layer will not command the motors itself. Nav2 and the safety layer remain the only things that do. A spoken "stop" will cancel the active goal.
+```bash
+source .venv-voice/bin/activate      # one-time setup: AUTONOMOUS_NAV.md, section 2.7
+ros2 run wheelchair_description voice_nav.py
+```
+
+In the simulation it reached all three named places from typed commands, refused an unknown place and stopped on "stop". The microphone path and the physical chair have not been tested yet.
+
+The work is split into phases, described in `docs/architecture.md`:
+
+- **Phase 1, voice to named places (now).** The map is built once by driving the chair manually with `run_slam`; places are saved on that map and reached by voice. Next: a microphone test, a `save_location.py` script, one places file per map, then trials on the chair.
+- **Phase 2, camera and VLM (next).** Go to an object the three RGB-D cameras can see, such as "the sofa". A prototype exists but is parked.
+- **Phase 3, Jetson Orin Nano Super.** Move the stack from the laptop to the chair's own computer.
 
 ## Further documentation
 
-- `AUTONOMOUS_NAV.md`: full simulation and real-chair walkthrough, named places, making a simulation map, what changed for the simulation, and troubleshooting.
+- `docs/architecture.md`: system design with flowcharts, the voice pipeline, simulation results, and the phase 2 and 3 plans.
+- `AUTONOMOUS_NAV.md`: full simulation and real-chair walkthrough, named places, voice navigation, making a simulation map, what changed for the simulation, and troubleshooting.
 - `maps/`: saved maps, including the generated `small_house_world` map used by the simulation.

@@ -1,12 +1,13 @@
 # Autonomous navigation: simulation and real chair
 
-The chair drives itself to a named place ("kitchen") or to any point on a saved map. Nav2 and
-the safety layer are the only things that command the motors, and the voice/VLM layer will
-later call the same `go_to(name)` function.
+The chair drives itself to a named place ("kitchen") or to any point on a saved map, from the
+command line or from a voice command. Nav2 and the safety layer are the only things that command
+the motors. The design, phases and test results are in `docs/architecture.md`.
 
 | Part | State |
 |---|---|
 | Simulation: saved map, named goals | Works. 6/6 goals succeeded (bedroom, living_room, kitchen, in mixed order), 20-60 s per room-to-room trip. |
+| Simulation: voice to named places | Works with typed commands (section 2.7). Microphone not tested yet. |
 | Real chair: build a map, navigate on it | Existing pipeline (`run_slam`, `run_nav`). Not re-tested in this work. |
 | Real chair: named places | Manual for now: read the pose, edit `locations.yaml` (section 3.4). |
 
@@ -129,10 +130,7 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 With `use_rviz:=true` you can also set the start pose with **2D Pose Estimate** and the goal with
 **2D Goal Pose**. This has not been tried in the sim yet.
 
-From Python (for the voice layer): `go_to(name)` and `load_locations()` live in
-`go_to_location.py`. The installed copy is in `install/wheelchair_description/lib/wheelchair_description/`,
-which is not on `PYTHONPATH`. Append that folder to `sys.path`, import `go_to`, and call
-`rclpy.init()` before the first `go_to(...)`, since it creates a node. Not tested yet.
+By voice: see section 2.7.
 
 ### 2.4 Stop the sim
 
@@ -196,6 +194,45 @@ ros2 run nav2_map_server map_saver_cli -f ~/wheelchair_nav/maps/my_map
 Check the map before you use it. Walls should be thin and straight, with no ghost walls inside
 rooms; fuzzy or doubled walls make AMCL and the planner fail. If it looks wrong, drive it again,
 slower.
+
+### 2.7 Voice navigation
+
+`voice_nav.py` listens on the laptop microphone, transcribes with faster-whisper (`base.en`, on
+the CPU), matches "go to / take me to <place>" against `locations.yaml`, and sends the place to
+Nav2. It speaks its replies with `spd-say` and ignores speech that is not a command.
+
+One-time setup (the first run also downloads the whisper model):
+
+```bash
+cd ~/wheelchair_nav
+/usr/bin/python3 -m venv --system-site-packages .venv-voice
+.venv-voice/bin/pip install faster-whisper rapidfuzz
+```
+
+With the sim and Nav2 up (2.1) and the start pose set (2.2), in a new sim terminal:
+
+```bash
+source .venv-voice/bin/activate
+ros2 run wheelchair_description voice_nav.py
+```
+
+Then say "take me to the kitchen". To test without a microphone, type the command instead:
+
+```bash
+ros2 topic pub --once /voice/transcript std_msgs/msg/String "{data: 'take me to the kitchen'}"
+```
+
+| You say | The chair |
+|---|---|
+| "take me to the kitchen" | Says "Going to the kitchen. Say stop to cancel.", waits 2 s, drives, then turns to the saved heading and says "Arrived at the kitchen." |
+| "stop", "halt" or "cancel" | Cancels the goal at any point and says "Stopping." |
+| An unknown place | Says "I don't know <place>." and lists the known places |
+| A new place while driving | Says "I am already moving. Say stop first." |
+
+Typed tests on 2026-10-04: all four behaviours worked, and the chair reached bedroom, kitchen and
+living room. The microphone path has not been tested. The turn to the saved heading uses Nav2's
+Spin, which can refuse next to furniture ("Collision Ahead"); the chair then keeps the heading it
+arrived with.
 
 ---
 
@@ -313,6 +350,9 @@ inside `<gazebo>` blocks, which only Gazebo reads, so the real chair's TF tree i
 | Named places with 1.3 m clearance | `config/locations.yaml` | See section 2.5. |
 | `go_to_location.py` | `scripts/` | Named goals through `NavigateToPose`. It only uses the `navigate_to_pose` action, which `run_nav` also provides. |
 | Install the two new scripts | `CMakeLists.txt` | So `ros2 run` finds them. |
+| EKF fuses only forward speed from the wheels; heading comes from the IMU | `launch/gazebo_sim.launch.py` | Gazebo's wheel odometry drifted about 45° in heading per trip (castor slip), and fusing the wheels' x, y pushed AMCL more than 1 m off. After the change AMCL stayed within 0.06-0.34 m of the true pose. `ekf.yaml` is unchanged. |
+| Three RGB-D cameras (front, left, right) on the RealSense topic names, bridged with `bridge_camera:=true` (off by default) | `urdf/wc_gazebo.xacro`, `launch/gazebo_sim.launch.py` | For the camera/VLM phase. Voice navigation does not use them. |
+| `voice_nav.py` | `scripts/`, `CMakeLists.txt` | Voice to named places (section 2.7). |
 
 Known gaps: the sim's straight-line odometry is 7% off in scale and not calibrated. The real chair
 may have the same axle-vs-`base_link` odometry offset; not checked yet.
@@ -328,6 +368,9 @@ may have the same axle-vs-`base_link` odometry offset; not checked yet.
 | Goal FAILED, "Start occupied" | The chair or the goal is inside the inflated zone. Move the chair to open floor, or pick a goal with more clearance. |
 | Goal FAILED, "no valid path found" | Goal in an unknown or occupied cell, or phantom walls. Check the map and the costmap in RViz. |
 | `ros2 run ... No executable found` | Script not executable or missing from `install(PROGRAMS)`. `chmod +x`, rebuild, re-source. |
+| Build skips `src/` or fails with "The source ... does not match the source ... used to generate cache" | A stray `CMakeLists.txt` at the repository root makes colcon treat the root as the only package. Build with `colcon build --base-paths src --symlink-install --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3`. |
+| `voice_nav.py`: `No module named 'faster_whisper'` | Activate the venv first: `source .venv-voice/bin/activate` (section 2.7). |
+| Voice command heard but nothing happens | It must contain "go to", "take me to", "drive to" or similar plus a known place. Check `/voice/status` and the node's `heard:` log lines. |
 | Gazebo segfault at start | Transient; relaunch. |
 | Sim goal sent, chair does not move | No start pose, so AMCL has no pose. Publish `/initialpose` (section 2.2). |
 | Real chair: `Device busy` | A previous run still holds the port. `pkill -9 -f ros; pkill -9 -f rviz; pkill -9 -f realsense; sleep 2` |
