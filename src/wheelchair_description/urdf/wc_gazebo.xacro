@@ -26,8 +26,8 @@
   
   <!-- Caster Wheels - Lower friction for free movement -->
   <gazebo reference="l_castor_wheel">
-    <mu1>0.1</mu1>
-    <mu2>0.1</mu2>
+    <mu1>0.01</mu1>
+    <mu2>0.01</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
@@ -36,8 +36,8 @@
   </gazebo>
   
   <gazebo reference="r_castor_wheel">
-    <mu1>0.1</mu1>
-    <mu2>0.1</mu2>
+    <mu1>0.01</mu1>
+    <mu2>0.01</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
@@ -155,7 +155,11 @@
   <!-- LiDAR Plugin (GPU LIDAR) -->
   <gazebo reference="lidar">
     <sensor name="gpu_lidar" type="gpu_lidar">
-      <pose>0 0 0 0 0 0</pose>
+      <!-- Sim only: the lidar link sits ~4 cm above the floor, so the 0.5-1 deg the chair
+           pitches while driving makes the beams hit the floor 3-8 m away (phantom walls in
+           the costmap). Lift the sensor 0.25 m; the frame in TF is unchanged and the scan
+           is planar, so only the beam height moves. -->
+      <pose>0 0 0.25 0 0 0</pose>
       <visualize>true</visualize>
       <update_rate>10</update_rate>
       <!-- Publish on a fixed topic/frame so the ROS bridge can map it to /scan.
@@ -167,10 +171,12 @@
       <lidar>
         <scan>
           <horizontal>
-            <samples>360</samples>
+            <!-- Sim only: the chair's own right/rear frame blocks -157..-100 deg and
+                 164..173 deg (returns at 0.3-1.1 m). Keep the clear arc, -98.5..160.4 deg. -->
+            <samples>260</samples>
             <resolution>1</resolution>
-            <min_angle>-3.141592</min_angle>
-            <max_angle>3.141592</max_angle>
+            <min_angle>-1.72</min_angle>
+            <max_angle>2.80</max_angle>
           </horizontal>
         </scan>
         <range>

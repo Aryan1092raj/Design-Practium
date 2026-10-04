@@ -38,7 +38,7 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, EmitEvent, IncludeLaunchDescription,
-                            RegisterEventHandler, TimerAction)
+                            LogInfo, RegisterEventHandler, TimerAction)
 from launch.conditions import IfCondition
 from launch.events import matches_action
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -64,10 +64,22 @@ def generate_launch_description():
     ekf = LaunchConfiguration("ekf")
     slam = LaunchConfiguration("slam")
     slam_params_file = LaunchConfiguration("slam_params_file")
+    nav2 = LaunchConfiguration("nav2")
+    use_collision_monitor = LaunchConfiguration("use_collision_monitor")
+    map_file = LaunchConfiguration("map")
+    nav2_params_file = LaunchConfiguration("nav2_params_file")
+    bt_xml = LaunchConfiguration("bt_xml")
+
+    pkg_navigation = get_package_share_directory("wheelchair_navigation")
 
     # SLAM needs odom -> base_link (the EKF) plus the bridged /scan.
     slam_ready = PythonExpression([
-        "'", slam, "' == 'true' and '", ekf, "' == 'true'",
+        "'", slam, "' == 'true' and '", ekf, "' == 'true' and '", nav2, "' != 'true'",
+    ])
+
+    # Nav2 localizes with AMCL on a saved map and drives to goals on its own.
+    nav2_ready = PythonExpression([
+        "'", nav2, "' == 'true' and '", ekf, "' == 'true' and '", bridge_lidar, "' == 'true'",
     ])
 
     declare_world_name = DeclareLaunchArgument(
@@ -109,6 +121,37 @@ def generate_launch_description():
         description="Real-robot slam_toolbox config to reuse (this is the same LiDAR-only "
                     "default that wheelchair_bringup/wheelchair_slam_mapping.launch.py "
                     "uses); the sim overrides in config/slam_sim.yaml are applied on top"
+    )
+    declare_nav2 = DeclareLaunchArgument(
+        "nav2", default_value="false",
+        description="Run the full Nav2 stack (AMCL localization + planner + controller + "
+                    "behaviour trees) so the wheelchair drives to goals by itself. "
+                    "Requires ekf:=true and bridge_lidar:=true, and takes precedence "
+                    "over slam:= because both would publish map -> odom."
+    )
+    declare_map = DeclareLaunchArgument(
+        "map", default_value="",
+        description="Saved map YAML that Nav2 localizes against, e.g. maps/small_house.yaml. "
+                    "Leave empty to build one first with slam:=true and teleop:=true."
+    )
+    declare_nav2_params_file = DeclareLaunchArgument(
+        "nav2_params_file",
+        default_value=os.path.join(pkg_navigation, "config", "nav2_params_3cam_v29.yaml"),
+        description="The real-robot Nav2 config to reuse, so simulated tuning matches the "
+                    "chair; config/nav2_sim.yaml is layered on top for sim time and /scan"
+    )
+    declare_bt_xml = DeclareLaunchArgument(
+        "bt_xml",
+        default_value=os.path.join(pkg_navigation, "behavior_tree",
+                                   "wheelchair_robust_nav_v3.xml"),
+        description="Nav2 behaviour tree, same as the one the real robot uses"
+    )
+    declare_collision_monitor = DeclareLaunchArgument(
+        "use_collision_monitor", default_value="false",
+        description="Insert the nav2_collision_monitor stop/slowdown layer between the "
+                    "velocity smoother and the motors. Off by default, matching "
+                    "wheelchair_fusion_nav.launch.py. When off, the smoothed command "
+                    "goes straight to the wheels."
     )
 
     # Gazebo, robot_state_publisher, spawn entity and gz-ROS bridge
@@ -225,12 +268,20 @@ def generate_launch_description():
     ekf_node = TimerAction(
         period=10.0,
         actions=[
+            # The EKF reads the axle odometry shifted to base_link (see the script).
+            Node(
+                package="wheelchair_description",
+                executable="odom_axle_to_base.py",
+                name="odom_axle_to_base",
+                output="screen",
+                parameters=[{"use_sim_time": True}],
+            ),
             Node(
                 package="robot_localization",
                 executable="ekf_node",
                 name="ekf_filter_node",
                 output="screen",
-                parameters=[ekf_config, {"use_sim_time": True}],
+                parameters=[ekf_config, {"odom0": "/wc_control/odom_base", "use_sim_time": True}],
             )
         ],
         condition=IfCondition(ekf),
@@ -277,6 +328,141 @@ def generate_launch_description():
         condition=IfCondition(slam_ready),
     )
 
+    # =========================================================================
+    # NAV2 - autonomous navigation on a saved map
+    # =========================================================================
+    # Command chain, identical to the real robot:
+    #   planner/controller -> /cmd_vel_nav -> velocity_smoother -> /cmd_vel
+    #   -> collision_monitor -> /cmd_vel_safe -> TwistStamped bridge
+    #   -> /wc_control/cmd_vel -> diff_drive_controller -> motors
+    # Recovery behaviours are remapped to /cmd_vel_nav too, otherwise BackUp and
+    # Spin publish straight to /cmd_vel and skip the velocity smoother.
+    nav2_common = {"use_sim_time": True}
+    nav2_sim_params = os.path.join(pkg_description, "config", "nav2_sim.yaml")
+
+    controller_server = Node(
+        package="nav2_controller", executable="controller_server",
+        name="controller_server", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common],
+        remappings=[("cmd_vel", "cmd_vel_nav")],
+        condition=IfCondition(nav2_ready),
+    )
+    smoother_server = Node(
+        package="nav2_smoother", executable="smoother_server",
+        name="smoother_server", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common],
+        condition=IfCondition(nav2_ready),
+    )
+    planner_server = Node(
+        package="nav2_planner", executable="planner_server",
+        name="planner_server", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common],
+        condition=IfCondition(nav2_ready),
+    )
+    behavior_server = Node(
+        package="nav2_behaviors", executable="behavior_server",
+        name="behavior_server", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common],
+        remappings=[("cmd_vel", "cmd_vel_nav")],
+        condition=IfCondition(nav2_ready),
+    )
+    bt_navigator = Node(
+        package="nav2_bt_navigator", executable="bt_navigator",
+        name="bt_navigator", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common,
+                    {"default_nav_to_pose_bt_xml": bt_xml,
+                     "default_nav_through_poses_bt_xml": bt_xml}],
+        condition=IfCondition(nav2_ready),
+    )
+    velocity_smoother = Node(
+        package="nav2_velocity_smoother", executable="velocity_smoother",
+        name="velocity_smoother", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common],
+        remappings=[("cmd_vel", "cmd_vel_nav"), ("cmd_vel_smoothed", "cmd_vel")],
+        condition=IfCondition(nav2_ready),
+    )
+    waypoint_follower = Node(
+        package="nav2_waypoint_follower", executable="waypoint_follower",
+        name="waypoint_follower", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common],
+        remappings=[("cmd_vel", "cmd_vel_nav")],
+        condition=IfCondition(nav2_ready),
+    )
+    # The collision monitor owns the tail of the chain: it reads the smoothed
+    # command and publishes the clamped one that reaches the motors. It is off by
+    # default, so the wheels are fed from /cmd_vel directly in that case.
+    collision_monitor = Node(
+        package="nav2_collision_monitor", executable="collision_monitor",
+        name="collision_monitor", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common],
+        remappings=[("cmd_vel_in", "cmd_vel"), ("cmd_vel_out", "cmd_vel_safe")],
+        condition=IfCondition(use_collision_monitor),
+    )
+    map_server = Node(
+        package="nav2_map_server", executable="map_server",
+        name="map_server", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common,
+                    {"yaml_filename": map_file}],
+        condition=IfCondition(nav2_ready),
+    )
+    # The TwistStamped bridge is what actually drives the wheels: diff_drive runs
+    # inside Gazebo and consumes /wc_control/cmd_vel. It reads /cmd_vel_safe when
+    # the collision monitor is enabled and /cmd_vel when it is not.
+    nav2_cmd_vel_bridge = Node(
+        package="scripts", executable="twist_stamped_teleop",
+        name="twist_stamped_teleop", output="screen",
+        parameters=[nav2_common],
+        remappings=[
+            ("cmd_vel_in", PythonExpression([
+                "'", use_collision_monitor, "' == 'true' and 'cmd_vel_safe' or 'cmd_vel'"])),
+            ("cmd_vel_out", "wc_control/cmd_vel"),
+        ],
+        condition=IfCondition(nav2_ready),
+    )
+    # amcl is spawned here rather than as a plain Node because the lifecycle
+    # manager has to bring it up with the rest of the stack.
+    amcl_node = LifecycleNode(
+        package="nav2_amcl", executable="amcl", name="amcl",
+        namespace="", output="screen",
+        parameters=[nav2_params_file, nav2_sim_params, nav2_common],
+        condition=IfCondition(nav2_ready),
+    )
+    nav2_lifecycle_manager = Node(
+        package="nav2_lifecycle_manager", executable="lifecycle_manager",
+        name="nav2_lifecycle_manager", output="screen",
+        parameters=[nav2_common, {"autostart": True, "node_names": PythonExpression([
+            "['map_server', 'amcl', 'controller_server', 'smoother_server', ",
+            "'planner_server', 'behavior_server', 'bt_navigator', ",
+            "'velocity_smoother', 'waypoint_follower'] + ",
+            "(['collision_monitor'] if '", use_collision_monitor, "' == 'true' else [])",
+        ])}],
+        condition=IfCondition(nav2_ready),
+    )
+
+    # The servers need the map and the wheel odometry to exist before they can
+    # activate, so the whole stack comes up on a timer rather than at t=0.
+    nav2_startup = TimerAction(
+        period=18.0,
+        actions=[map_server, amcl_node, controller_server, smoother_server,
+                 planner_server, behavior_server, bt_navigator,
+                 velocity_smoother, waypoint_follower,
+                 nav2_cmd_vel_bridge, nav2_lifecycle_manager],
+    )
+
+    nav2_ready_message = TimerAction(
+        period=28.0,
+        actions=[LogInfo(msg=[
+            "\n", "=" * 70, "\n",
+            "  Nav2 is up - the wheelchair now drives on its own.\n",
+            "  Set a goal with the RViz '2D Goal Pose' tool, or:\n",
+            "    ros2 action send_goal /navigate_to_pose ",
+            "nav2_msgs/action/NavigateToPose \"{pose: {header: {frame_id: 'map'}, ",
+            "pose: {position: {x: 3.0, y: 2.0}, orientation: {w: 1.0}}}\"\n",
+            "=" * 70, "\n",
+        ])],
+        condition=IfCondition(nav2_ready),
+    )
+
     return LaunchDescription([
         declare_world_name,
         declare_use_rviz,
@@ -286,6 +472,11 @@ def generate_launch_description():
         declare_ekf,
         declare_slam,
         declare_slam_params,
+        declare_nav2,
+        declare_map,
+        declare_nav2_params_file,
+        declare_bt_xml,
+        declare_collision_monitor,
         gazebo,
         joint_state_broadcaster_spawner,
         wc_control_spawner,
@@ -298,4 +489,7 @@ def generate_launch_description():
         slam_node,
         slam_configure,
         slam_activate,
+        nav2_startup,
+        nav2_ready_message,
+        collision_monitor,
     ])
