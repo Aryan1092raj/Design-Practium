@@ -1,8 +1,0 @@
-# Named goals in the map frame (small_house world). yaw in radians, facing the furniture.
-# Picked on maps/small_house_world.yaml (generated from the world file by
-# scripts/world_to_map.py) at the open spot of each room, >= 1.3 m from any obstacle.
-# Spots hugging furniture (0.7 m clearance) failed: the chair's 0.9 x 0.7 m footprint
-# turned into the inflated zone and the planner reported "Start occupied".
-bedroom:     {x: -4.54, y: -0.14, yaw: 2.22}   # south-east of the bed
-kitchen:     {x: 4.64, y: -1.98, yaw: 0.99}    # toward the kitchen table
-living_room: {x: 0.20, y: 1.48, yaw: -1.53}    # toward the sofa
