@@ -168,12 +168,15 @@ Differences that matter: the sim uses simulated time, feeds the raw `/scan` to A
 
 ## 7. What to build
 
-Four small additions, in this order. Each one is independent and testable on the sim.
+Six additions, in this order. Steps 1 to 4 are small and independent; steps 5 and 6 are the voice layer from section 10. All are testable on the sim.
 
 1. **`save_location.py <name>`** reads one `/amcl_pose` message, converts the quaternion to yaw and appends the entry to the active map's `places.yaml`. Check: save a place in the sim, restart `go_to_location.py` on it, confirm `SUCCEEDED`.
 2. **Per-map places in `go_to_location.py`.** Resolve the places file from the loaded map, with `--places` as an override, and add `--list`. Check: run the same command against two maps with different places and confirm each list differs.
 3. **Initial pose from the map.** Save a `home` place when mapping starts (the origin) and publish it to `/initialpose` after `run_nav` starts. This removes the manual RViz step. Check: restart the sim, confirm AMCL converges without RViz.
 4. **Localization guard in `go_to`.** Refuse to send a goal while the AMCL covariance is above a threshold. Check: publish a bad initial pose in the sim and confirm the goal is refused instead of attempted.
+
+5. **Voice nodes** (`stt_node`, `intent_node`, `place_navigator`) as described in section 10. Check: publish typed text to `/voice/transcript` in the sim and confirm the chair arrives, with no microphone involved. Add the microphone only after that works.
+6. **Stop path.** A "stop" utterance, handled without the LLM, cancels the active Nav2 goal. Check: say or publish "stop" mid-trip in the sim and confirm the chair halts.
 
 The intent layer on this branch then needs only `list_places()` (to give the VLM its vocabulary) and `go_to(name)`. The JSON contract is in `docs/examples/vlm_intent.example.json`.
 
@@ -188,3 +191,116 @@ The named poses above are virtual markers, and they need no hardware. If the cha
 - **Clearance.** Places closer than about 1.3 m to furniture failed with "Start occupied" in the sim, because the 0.9 x 0.7 m footprint plus inflation covered the goal. `save_location.py` should warn when the saved pose is inside the inflated costmap.
 - **`go_to` uses a new node per call** and expects `rclpy.init()` first. The Python import path from the VLM process is untested; wrap it in a small ROS node or service if the VLM runs in a separate process.
 - **`run_nav` kills all ROS 2 processes** at start (`pkill -9 -f ros2`). It must not be launched while the simulation is running.
+
+## 10. Voice-driven navigation
+
+A spoken command becomes a place name, and the place name goes through the same `go_to(name)` path as everything else. The voice layer adds three ROS 2 nodes and no new way to move the chair.
+
+```mermaid
+flowchart LR
+    MIC["Microphone"] --> VAD["VAD: speech start / end"]
+    VAD --> WAKE["Wake word"]
+    WAKE --> STT["Speech to text"]
+    STT -- "/voice/transcript" --> INT["intent_node"]
+    INT --> FZ{"Matches a place<br/>by fuzzy match?"}
+    FZ -- "yes" --> CONF["Confirm with passenger"]
+    FZ -- "no" --> LLM["Small LLM, JSON output<br/>(optional stage 2)"]
+    LLM --> CHK{"Target in list_places()?"}
+    CHK -- "no" --> REJ["Say: I don't know that place"]
+    CHK -- "yes" --> CONF
+    CONF -- "yes" --> NAVN["place_navigator"]
+    CONF -- "no / timeout" --> CANCEL["Drop the command"]
+    NAVN -- "NavigateToPose" --> NAV2["Nav2 (exists)"]
+    NAV2 -- "result" --> NAVN
+    NAVN --> TTS["Text to speech: arrived / failed"]
+    STOP["'stop' keyword<br/>(no LLM, always on)"] -- "cancel goal" --> NAVN
+```
+
+The nodes and their interfaces:
+
+| Node | Input | Output | Notes |
+|---|---|---|---|
+| `stt_node` | Microphone audio | `/voice/transcript` (`std_msgs/String`) | Starts only after the wake word; VAD ends the utterance |
+| `intent_node` | `/voice/transcript`, places list | `/voice/intent` (JSON string, format in `docs/examples/vlm_intent.example.json`) | Fuzzy match first; the LLM runs only when that fails |
+| `place_navigator` | `/voice/intent`, `places.yaml` | `NavigateToPose` goal, `/voice/status` text for TTS | One long-lived node that wraps `go_to`; replaces creating a node per call |
+
+Four rules keep this safe for a seated passenger:
+
+1. **Closed vocabulary.** The intent must name a key in `places.yaml`. Free text never becomes coordinates.
+2. **Confirmation before motion.** The chair says "Going to the kitchen, say stop to cancel" and waits a few seconds before it moves.
+3. **Stop has its own path.** The stop keyword is matched on the raw transcript or a dedicated keyword spotter, never on the LLM output, and cancels the Nav2 goal. The joystick and the hardware emergency stop stay independent of all of this.
+4. **Typed input is a first-class source.** `/voice/transcript` accepts text from any publisher, so the whole chain runs in the simulation with no audio.
+
+## 11. Models and software
+
+These are proposals for each role, chosen to run on the laptop now and on the Jetson later. None has been benchmarked on this project; the benchmark gates in section 12 decide what ships.
+
+| Role | Proposed choice | Why | Fallback |
+|---|---|---|---|
+| Robot framework | ROS 2 Jazzy, Nav2, SLAM Toolbox, AMCL | Already in use | None |
+| Simulation | Gazebo (`gz sim`) with `ros_gz` bridges | Already in use | None |
+| Voice activity detection | Silero VAD | Small, runs on CPU | WebRTC VAD |
+| Wake word | openWakeWord | Open source, runs on CPU, trainable for a custom phrase | Push-to-talk button |
+| Speech to text | faster-whisper, `small.en` | Good accuracy on short commands, CUDA and CPU backends | `base.en`; whisper.cpp if the Jetson build is easier |
+| Stage 1 intent | `rapidfuzz` match against place names plus a few verb patterns ("go to", "take me to") | No model, no latency, deterministic | None needed |
+| Stage 2 intent (optional) | Qwen2.5 1.5B Instruct, 4-bit GGUF, run with `llama.cpp` and a JSON grammar | Handles free phrasing; the grammar forces valid JSON | A 3B model if 1.5B misses too many phrasings |
+| Text to speech | Piper | Offline, fast on CPU | `espeak-ng` |
+| Audio capture | USB microphone or headset, `sounddevice` | Close-talk mic is far more reliable than a laptop mic in a moving chair | USB array microphone |
+| Glue | Python `rclpy` nodes, one `voice_config.yaml` | Matches the existing launch style | None |
+| VLM (section 13, later) | Qwen2.5-VL 3B Instruct, or SmolVLM2 / moondream2 if memory is tight | Small enough for 8 GB shared memory | A detector plus depth (YOLO-World or Grounding DINO) if VLM boxes are unreliable |
+
+## 12. Compute: laptop now, Jetson Orin Nano Super later
+
+Everything runs on the laptop first. Moving to the Jetson then means changing a config profile, not code.
+
+```mermaid
+flowchart TB
+    subgraph Cfg["voice_config.yaml"]
+        P1["profile: laptop"]
+        P2["profile: jetson"]
+    end
+    subgraph Nodes["Same ROS 2 nodes in both"]
+        N1["stt_node"] 
+        N2["intent_node"]
+        N3["place_navigator"]
+        N4["Nav2 stack"]
+    end
+    P1 --> Nodes
+    P2 --> Nodes
+    Nodes --> HW1["Laptop: Gazebo sim, or chair over USB"]
+    Nodes --> HW2["Jetson: chair, 3 RealSense, RPLidar, Arduino"]
+```
+
+A profile sets the model name, the backend (CUDA or CPU), the quantization and whether the LLM stage is on. The nodes read nothing else about the platform.
+
+The Jetson Orin Nano Super has 8 GB of memory shared by CPU and GPU, and Nav2, the three RealSense streams and scan fusion already use a large part of it. Rough, unmeasured planning figures: `small.en` speech to text about 1 GB, a 1.5B 4-bit LLM about 1 to 1.5 GB, a 3B 4-bit VLM about 2 to 3 GB. The plan that follows from this:
+
+1. Keep the VLM unloaded until it is asked for, and unload it afterwards.
+2. Run the LLM stage only when the fuzzy match fails.
+3. Measure free memory with Nav2 and all cameras running before choosing model sizes.
+
+Benchmark gates before the Jetson move, with targets to be agreed: speech to text latency for a 3 second command, time from end of speech to the first motion command, peak memory with the full stack up, and the `go_to` success rate over a fixed list of spoken phrases.
+
+Open question: ROS 2 Jazzy targets Ubuntu 24.04, and the JetPack release available for the Orin Nano may ship a different Ubuntu version. Check this first. If they differ, run the ROS stack in a Jazzy container on the Jetson.
+
+## 13. One-shot VLM with the camera (later, not in scope now)
+
+The VLM extends the same pipeline with one extra source of intent: the camera frame. It is written down here so the earlier layers leave room for it, and nothing in sections 1 to 12 depends on it.
+
+```mermaid
+flowchart TD
+    I["Instruction + camera frame<br/>'go to the chair by the window'"] --> V["VLM"]
+    V --> Q{"Answer type"}
+    Q -- "known place" --> P["place name from list_places()"]
+    Q -- "object in view" --> B["bounding box"]
+    P --> G["go_to(name)"]
+    B --> D["Depth at box center -> 3D point"]
+    D --> T["TF camera -> map -> candidate goal pose"]
+    T --> F{"Cell is free and known<br/>in the costmap?"}
+    F -- "no" --> R["Say: I can't reach that"]
+    F -- "yes" --> C["Confirm with passenger"]
+    C --> N["NavigateToPose (Nav2)"]
+    G --> N
+```
+
+The rules from section 10 carry over. The VLM only proposes a target; it does not command motion. A target must be a known place or a free, mapped cell within a maximum distance, and the passenger confirms before the chair moves. The first VLM milestone is the simpler half: asking the VLM to pick a known place from the current view, which reuses `go_to(name)` unchanged. The object-to-goal half needs the camera extrinsics in TF and is the larger piece of work.
