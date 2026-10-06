@@ -1,0 +1,100 @@
+<!--
+WHEELCHAIR ROBUST NAVIGATION BEHAVIOR TREE V4 - FORWARD FIRST
+=============================================================
+Pairs with: config/nav2_params_3cam_v30.yaml (no reversing while following a
+path; the chair turns in place to face the path instead).
+
+The passenger faces forward and cannot see behind the chair, so reversing is
+the last thing the chair tries when it is stuck, not the first.
+
+CHANGES from v3 (wheelchair_robust_nav_v3.xml):
+- Recovery order is forward first: clear costmaps, wait, look left, look
+  right, and only then back up. v3 backed up first and three times per cycle
+  (30 + 40 + 50 cm = 1.2 m of reversing).
+- One backup per cycle, 30 cm at 0.10 m/s. Kept from v3, whose rosbag
+  analysis showed 15 cm at 0.05 m/s was too small to get clear.
+- Wait 2.0 -> 3.0 s: a person in front of the chair usually steps aside
+  within a few seconds.
+- number_of_retries 7 -> 5, so each of the five recoveries is tried once.
+  RoundRobin moves straight on when a recovery fails (for example a Spin
+  refused with "Collision Ahead" in a tight spot), so the backup comes
+  earlier only when the chair has no room to turn.
+- The navigation pipeline (planning, replanning rate, path following) is
+  unchanged from v3.
+
+Worst case before giving up: ~0.3 + 3 + 3 + 3 + 4 s = ~13 s of recoveries.
+
+RECOVERY SEQUENCE:
+1. Clear costmaps            - remove stale or phantom obstacles (no motion)
+2. Wait 3.0 s                - let a person or a door move (no motion)
+3. Spin 60 deg left (CCW)    - look for another way forward
+4. Spin 60 deg right (CW)    - look the other way
+5. Backup 30 cm @ 0.10 m/s   - LAST RESORT, only after 1-4
+
+Created: 2026-10-05
+
+DO NOT EDIT - create a new versioned file (wheelchair_robust_nav_v5.xml)
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+
+    <!-- Main navigation with 5 recovery cycles (each of the 5 actions tried once) -->
+    <RecoveryNode number_of_retries="5" name="NavigateRecovery">
+
+      <!-- Primary navigation pipeline (unchanged from v3) -->
+      <PipelineSequence name="NavigateWithReplanning">
+
+        <!-- PATH PLANNING - 0.5Hz replanning (every 2s = ~50cm at 0.25 m/s) -->
+        <RateController hz="0.5">
+          <RecoveryNode number_of_retries="1" name="ComputePathRecoveryNode">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"
+                               error_code_id="{compute_path_error_code}"/>
+            <ClearEntireCostmap name="ClearGlobalOnPlanFail"
+              service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+
+        <!-- PATH FOLLOWING - With single recovery attempt -->
+        <RecoveryNode number_of_retries="1" name="FollowPathRecoveryNode">
+          <FollowPath path="{path}" controller_id="FollowPath"
+                      goal_checker_id="general_goal_checker"
+                      error_code_id="{follow_path_error_code}"/>
+          <ClearEntireCostmap name="ClearLocalOnFollowFail"
+            service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+
+      </PipelineSequence>
+
+      <!-- RECOVERY ACTIONS - RoundRobin, forward first, reverse last -->
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+
+        <RoundRobin name="RecoveryActions">
+
+          <!-- Recovery 1: Clear costmaps (removes stale obstacles so re-plan can work) -->
+          <Sequence name="CostmapClearRecovery">
+            <ClearEntireCostmap name="ClearGlobalCostmap"
+              service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ClearEntireCostmap name="ClearLocalCostmap"
+              service_name="local_costmap/clear_entirely_local_costmap"/>
+          </Sequence>
+
+          <!-- Recovery 2: Wait for a person or a door to move -->
+          <Wait wait_duration="3.0"/>
+
+          <!-- Recovery 3: Spin 60 deg left (CCW) - look for another way forward -->
+          <Spin spin_dist="1.05" time_allowance="5.0"/>
+
+          <!-- Recovery 4: Spin 60 deg right (CW) - look the other way -->
+          <Spin spin_dist="-1.05" time_allowance="5.0"/>
+
+          <!-- Recovery 5: LAST RESORT - short, slow backup -->
+          <BackUp backup_dist="0.30" backup_speed="0.10" time_allowance="4.0"/>
+
+        </RoundRobin>
+      </ReactiveFallback>
+
+    </RecoveryNode>
+
+  </BehaviorTree>
+</root>
