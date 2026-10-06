@@ -74,13 +74,17 @@ source /opt/ros/jazzy/setup.bash && source install_src/setup.bash
 export FASTRTPS_DEFAULT_PROFILES_FILE=$HOME/fastdds_udp.xml
 ```
 
-Terminal 1 starts the sim and Nav2:
+Terminal 1 starts the sim and Nav2 with the forward-first config (see "Forward-first navigation" below):
 
 ```bash
 ros2 launch wheelchair_description gazebo_sim.launch.py \
   world_name:=small_house use_rviz:=false nav2:=true \
-  map:=$HOME/wheelchair_nav/maps/small_house_world.yaml
+  map:=$HOME/wheelchair_nav/maps/small_house_world.yaml \
+  nav2_params_file:=$HOME/wheelchair_nav/src/wheelchair_navigation/config/nav2_params_3cam_v30.yaml \
+  bt_xml:=$HOME/wheelchair_nav/src/wheelchair_navigation/behavior_tree/wheelchair_robust_nav_v5.xml
 ```
+
+Without the last two arguments the launch falls back to the old defaults (v29 params, which reverse along the path).
 
 Terminal 2, after about 30 s, checks that all eight Nav2 nodes print `active [3]`, then sets the start pose at the origin:
 
@@ -129,6 +133,59 @@ ps -eo pid,cmd | grep -E "gz sim|parameter_bridge|nav2_|ekf_node" | grep -v grep
 ```
 
 Do not run `run_nav`, `run_slam` or `run_localization` while the sim is up. They run `pkill -9 -f ros2` and kill every ROS 2 process.
+
+## Forward-first navigation (2026-10-06)
+
+The chair now drives forward to every place and reverses only as a last-resort recovery. Before this, it often drove backwards, which the passenger cannot see. In the sim it reached the bedroom, kitchen and living room from the spawn pose next to the sofa, with zero reverse commands on `/cmd_vel`. It has not been tested on the real chair.
+
+The reversing had two sources. RPP in `nav2_params_3cam_v29.yaml` had `allow_reversing: true`, so it drove backwards whenever the path started behind the chair. The v3 behaviour tree also backed up first in every recovery cycle, three times (30 + 40 + 50 cm).
+
+### What changed
+
+All new files are versioned copies. The only existing file edited is `voice_nav.py`.
+
+`src/wheelchair_navigation/config/nav2_params_3cam_v30.yaml` is a copy of v29 with these changes, each explained in its header:
+
+1. RPP `allow_reversing: true` → `false`.
+2. RPP `use_rotate_to_heading: true`, `rotate_to_heading_min_angle: 0.785`. If the path points more than 45° away, the chair turns in place first.
+3. RPP `use_collision_detection: true`. RPP stops if the footprint would hit something in the next 1 s.
+4. Progress checker `SimpleProgressChecker` → `PoseProgressChecker` (`required_movement_angle: 0.5`), so a turn in place counts as progress. `movement_time_allowance` 4.0 → 10.0.
+5. Velocity smoother `min_velocity` x −0.15 → −0.10 m/s, the backup speed.
+6. RPP `max_angular_accel` 0.8 → 3.2. At 0.8, RPP ramps each command from the measured spin, so a turn from rest crept at about 0.05 rad/s and the progress checker aborted it.
+7. A second controller, `FollowPathReverse`: RPP with `allow_reversing: true` at 0.10 m/s, used only by the v5 tree's last recovery.
+8. Planner `SmacPlanner2D` → `SmacPlannerHybrid` with `motion_model_for_search: DUBIN` (forward only) and `minimum_turning_radius: 0.40`. This was the fix that made the spawn pose work. The 2D planner treats the chair as a point with no heading, so its bedroom path started toward the sofa. The chair's corners sweep 0.61 m when it pivots, the sofa was about 0.5 m away, and every turn and backup was refused with "Collision Ahead". Hybrid-A* starts from the chair's heading and checks the footprint along the path, so it plans a forward curve away from the sofa.
+
+`src/wheelchair_navigation/behavior_tree/wheelchair_robust_nav_v5.xml` replaces v3's recoveries with a forward-first order, tried once each per cycle: clear costmaps, wait 3 s, spin 60° left, spin 60° right, back up 30 cm at 0.10 m/s, and finally follow the path in reverse with `FollowPathReverse` for at most 4 s. If the chair still cannot get through, the tree gives up after about 17 s of recoveries. `wheelchair_robust_nav_v4.xml` is the same tree without the last step.
+
+`src/wheelchair_description/scripts/voice_nav.py` now says "I could not reach the <place>. I may be stuck. Please help me." when a goal fails.
+
+One change was tried and reverted: setting the local costmap's `track_unknown_space` to `false`. The evidence for it came from a costmap snapshot that was probably stale (`always_send_full_costmap: false`), so it stays `true` as in v29.
+
+### How it was tested
+
+All runs were in the sim, from the spawn pose at the origin, with typed transcripts:
+
+| Run | Config | Result |
+|---|---|---|
+| Bedroom | v30 changes 1–5, v4 tree | Turned at about 0.05 rad/s, aborted with "Failed to make progress" |
+| Bedroom | + change 6 | Turned to −50° in under 10 s, then stopped by the sofa; all recoveries refused |
+| Bedroom | + change 7, v5 tree | Reversed 0.33 m along the path at 0.10 m/s, still boxed in, voice asked for help |
+| Bedroom | + change 8 | Arrived in about 25 s, forward only |
+| Kitchen | same | Arrived in 51 s, forward only |
+| Living room | same | Arrived in 37 s, forward only |
+
+Checks used: `ros2 param get /controller_server FollowPath.allow_reversing` prints `False`, and `ros2 topic echo /cmd_vel --field linear.x | awk '$1+0 < 0'` stays silent unless a recovery runs. The controller, behaviour server and planner logs are under `~/.ros/log/`.
+
+### Risks
+
+- Hybrid-A* uses more CPU than the 2D planner. It replans at 0.5 Hz in the tree, which was fine in the sim, but it has not been measured on the Jetson.
+- If the chair is boxed in with no forward exit, the Dubin planner finds no path. The v5 recoveries then run, including up to 0.4 m of path-reverse, and the voice asks for help.
+- On the real chair the cameras face front, left and right, so any reverse relies on the lidar alone to see behind.
+- RPP collision detection was turned off in earlier configs because of false stops from phantom STVL obstacles. STVL is gone now, but if false stops return on the real chair, set `use_collision_detection: false` in a new version.
+- The planner logs that `inflation_radius: 0.40` is too small for its footprint checks. That affects planning speed, not safety. The sim overrides it to 0.65 in `nav2_sim.yaml`.
+- AMCL drift is still there: at the living room, AMCL and Gazebo ground truth differed by about 60 cm, and at the bedroom by about 26 cm.
+
+The launch defaults still point to v29 and v3. To make v30 and v5 the default, change two lines each in `gazebo_sim.launch.py` and `wheelchair_fusion_nav.launch.py`, then rebuild.
 
 ## Known issues and next steps
 

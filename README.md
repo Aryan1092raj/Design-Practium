@@ -104,6 +104,10 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 **Navigation.** Defaults: `map_name:=maps/h2.yaml`,
 `nav2_params:=nav2_params_3cam_v29.yaml`, `bt_xml:=wheelchair_robust_nav_v3.xml`.
+The forward-first config (`nav2_params_3cam_v30.yaml` with
+`wheelchair_robust_nav_v5.xml`) drives forward and reverses only as a last-resort
+recovery. It is tested in the simulation only, so it is opt-in for now; the changes
+and test runs are in `progress.md`.
 
 ```bash
 source setup.bash
