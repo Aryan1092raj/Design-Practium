@@ -112,7 +112,8 @@ class VoiceNav(Node):
             if ok:
                 self.face(p["yaw"])
             if not self.cancelled.is_set():
-                self.say(f"Arrived at the {name}." if ok else f"I could not reach the {name}.")
+                self.say(f"Arrived at the {name}." if ok else
+                         f"I could not reach the {name}. I may be stuck. Please help me.")
         finally:
             self.busy = False
 
