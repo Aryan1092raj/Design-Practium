@@ -2,6 +2,35 @@
 
 Voice navigation works in the Gazebo simulation with typed transcripts. You say "take me to the kitchen", the chair transcribes it, picks the place from `locations.yaml`, sends a Nav2 goal and drives there. The live microphone path has not been tested yet.
 
+## Summary of changes
+
+This is what changed on the `voice-sim` branch, oldest first. Details for each item are in the sections below and in the files named here.
+
+**2026-10-04: Nav2 in the Gazebo sim, with named places** (commit `46de1e9`)
+
+- `launch/gazebo_sim.launch.py` gained a `nav2:=true` mode that starts the full Nav2 stack (AMCL, planner, controller, behaviour server, velocity smoother) on a saved map, using the real chair's `nav2_params_3cam_v29.yaml` with `config/nav2_sim.yaml` layered on top. New launch arguments: `nav2`, `map`, `nav2_params_file`, `bt_xml`, `use_collision_monitor`.
+- The EKF in the sim now fuses only forward speed from the wheels and takes heading from the IMU. `scripts/odom_axle_to_base.py` shifts the axle odometry to `base_link` for it. Without this, wheel heading drifted about 45° after one trip and AMCL ended more than 1 m off.
+- `scripts/world_to_map.py` builds a map from the world file; the generated maps are in `maps/`.
+- `scripts/go_to_location.py` and `config/locations.yaml` send a named place (bedroom, kitchen, living room) to Nav2.
+
+**2026-10-04: voice navigation and RGB-D cameras** (commits `695022f`, `0d8c67f`)
+
+- `scripts/voice_nav.py` is the voice node: microphone, faster-whisper, place matching, Nav2 goal, spoken replies. `CMakeLists.txt` installs it with the other two scripts.
+- `urdf/wc_gazebo.xacro` now has three simulated RGB-D cameras (front, left, right) on the RealSense topic names, bridged with `bridge_camera:=true`. It also has sim-only fixes: lower caster friction, a lidar raised 0.25 m so pitching does not draw phantom walls, and a lidar scan arc that skips the chair's own frame.
+- `scripts/vlm_nav.py` and `scripts/vlm_server.sh` are the phase-2 camera/VLM files. They are not installed and not part of this run.
+- `.gitignore` now covers `.venv-voice/`.
+- Docs: `docs/architecture.md`, `AUTONOMOUS_NAV.md` (section 2.7), `README.md` and `README.dp.md` describe the voice phase.
+
+**2026-10-05: this file** (commit `8165155`) records how to build and run voice navigation in the sim.
+
+**2026-10-06: forward-first navigation** (commits `0d41650`, `d0391dc`, `2adde49`, `58997c0`, `be108ac`)
+
+- `nav2_params_3cam_v30.yaml` stops the chair driving backwards along its path and switches the planner to Hybrid-A*.
+- `wheelchair_robust_nav_v4.xml` and `v5.xml` try forward recoveries first and reverse only as the last step.
+- `voice_nav.py` asks the passenger for help when a goal fails.
+- `README.md` notes the new config is opt-in, because it is tested in the sim only. The launch defaults are still v29 and the v3 tree.
+- `build_src/` and `install_src/` are ignored by git (commit `6c391c0`).
+
 ## Status
 
 | Item | State |
@@ -190,6 +219,12 @@ The launch defaults still point to v29 and v3. To make v30 and v5 the default, c
 ## Known issues and next steps
 
 - The root `CMakeLists.txt` should be removed, along with the stale `build/` and `install/`. This needs explicit approval, so it has not been done.
-- `build_src/` and `install_src/` are not in `.gitignore`.
 - The background-noise threshold of the energy gate is untested in a real room. If it misfires, the gate is `max(3.0 * noise, 0.01)` in `listen()` in `voice_nav.py`.
 - Still to do: update `docs/architecture.md` so voice-only is the current phase, write `save_location.py`, and merge `voice-sim` into `voice-pipeline` so GitHub has the files again.
+- Still to do: make v30 and v5 the launch defaults (see "Forward-first navigation"), test the live microphone, and test voice and forward-first navigation on the real chair. The last two need the hardware.
+
+## Which simulation to use
+
+Use this simulation (`gazebo_sim.launch.py` with `world_name:=small_house`) as the base. It already has Nav2, AMCL, the EKF fix, a generated map and named places, and the places are already hardcoded in `config/locations.yaml` as x, y (metres) and yaw (radians) in the map frame. Finishing a second simulation would repeat that setup.
+
+A separate half-finished simulation is only worth keeping if it has something this one lacks, such as a different world or layout. In that case, copy its world file into `src/wheelchair_description/worlds/`, generate its map with `scripts/world_to_map.py`, and add its places to `config/locations.yaml`.
