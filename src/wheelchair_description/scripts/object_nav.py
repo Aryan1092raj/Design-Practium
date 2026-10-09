@@ -125,7 +125,7 @@ class ObjectNav(VoiceNav):
                     self.say("My map or cameras are not ready yet. Please ask again in a moment.")
                 return
             self.detector.set_target(target)
-            hits, tried, trips = Hits(), [], 0
+            hits, tried, trips, boots = Hits(), [], 0, 0
             self.look(hits)
             if hits.ready() is None:  # the cameras cover ~259 deg, so look behind once
                 self.run_and_look(self.spin_client, spin_goal(math.pi), hits)
@@ -137,6 +137,11 @@ class ObjectNav(VoiceNav):
                 frontier = None
                 if trips < MAX_TRIPS and time.monotonic() < self.deadline:
                     frontier = self.next_frontier(tried)
+                    if frontier is None and boots < 2:
+                        boots += 1
+                        frontier = self.bootstrap(hits, tried)
+                        if frontier is None and hits.ready() is not None:
+                            continue  # the bootstrap saw the object; check it first
                 if frontier is None:
                     if not self.cancelled.is_set():
                         self.say(f"I could not find the {target}.")
@@ -150,6 +155,30 @@ class ObjectNav(VoiceNav):
             self.get_logger().info(f"SEARCH_RESULT target={target} found={found} "
                                    f"time={time.monotonic() - start:.0f}s path={self.travelled:.1f}m")
             self.busy = False
+
+    def bootstrap(self, hits, tried):
+        """No frontier yet, as right after start-up when slam_toolbox has only the chair's own
+        footprint. Spin in four 90 degree steps (one 180 degree spin can abort near furniture),
+        then creep 0.6 m ahead, until the growing map offers a frontier."""
+        for _ in range(4):
+            if self.run_and_look(self.spin_client, spin_goal(math.pi / 2), hits) \
+                    or hits.ready() is not None:
+                return None
+            f = self.pause_for_map(tried)
+            if f is not None:
+                return f
+        chair = self.chair_pose()
+        if chair is not None:
+            ahead = nav_goal(chair[0] + 0.6 * math.cos(chair[2]),
+                             chair[1] + 0.6 * math.sin(chair[2]), chair[2])
+            if self.run_and_look(self.nav, ahead, hits) or hits.ready() is not None:
+                return None
+            return self.pause_for_map(tried)
+        return None
+
+    def pause_for_map(self, tried):
+        time.sleep(1.5)  # slam_toolbox publishes /map about once a second
+        return None if self.cancelled.is_set() else self.next_frontier(tried)
 
     def wait_ready(self, timeout=30.0):
         """True once the live map, the costmap, the chair pose and one complete camera exist.
