@@ -120,6 +120,10 @@ class ObjectNav(VoiceNav):
             self.say(f"Looking for the {target}. Say stop to cancel.")
             if self.cancelled.wait(2.0):
                 return
+            if not self.wait_ready():
+                if not self.cancelled.is_set():
+                    self.say("My map or cameras are not ready yet. Please ask again in a moment.")
+                return
             self.detector.set_target(target)
             hits, tried, trips = Hits(), [], 0
             self.look(hits)
@@ -146,6 +150,18 @@ class ObjectNav(VoiceNav):
             self.get_logger().info(f"SEARCH_RESULT target={target} found={found} "
                                    f"time={time.monotonic() - start:.0f}s path={self.travelled:.1f}m")
             self.busy = False
+
+    def wait_ready(self, timeout=30.0):
+        """True once the live map, the costmap, the chair pose and one complete camera exist.
+        Right after start-up (sim or chair) a command can arrive before any of them do."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end and not self.cancelled.is_set():
+            if (self.map is not None and self.costmap is not None
+                    and self.chair_pose() is not None
+                    and any(len(self.frames[c]) == 3 for c in CAMERAS)):
+                return True
+            time.sleep(0.5)
+        return False
 
     def confirmed(self, hits, target):
         """Map position of a cluster the VLM agrees is the target, or None."""

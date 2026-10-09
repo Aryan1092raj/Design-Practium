@@ -78,6 +78,11 @@ def generate_launch_description():
         'side_resolution', default_value='424x240x15',
         description='Side cameras resolution (WxHxFPS)'
     )
+    declare_side_color = DeclareLaunchArgument(
+        'side_color', default_value='false',
+        description='Colour on the left and right cameras (object search needs it; '
+                    'costs USB bandwidth)'
+    )
 
     # ========================================================================
     # FRONT CAMERA (D455) - Primary with IMU
@@ -147,7 +152,8 @@ def generate_launch_description():
                     'depth_module.emitter_enabled': 'true',
                     'align_depth.enable': 'true',
                     'enable_sync': 'true',
-                    'enable_color': 'false',  # Depth only - saves USB bandwidth
+                    'enable_color': LaunchConfiguration('side_color'),  # off by default: USB bandwidth
+                    'rgb_camera.profile': LaunchConfiguration('side_resolution'),
                     'depth_module.profile': LaunchConfiguration('side_resolution'),
                     # Point cloud generation
                     'pointcloud.enable': 'true',
@@ -190,7 +196,8 @@ def generate_launch_description():
                     'depth_module.emitter_enabled': 'true',
                     'align_depth.enable': 'true',
                     'enable_sync': 'true',
-                    'enable_color': 'false',  # Depth only - saves USB bandwidth
+                    'enable_color': LaunchConfiguration('side_color'),  # off by default: USB bandwidth
+                    'rgb_camera.profile': LaunchConfiguration('side_resolution'),
                     'depth_module.profile': LaunchConfiguration('side_resolution'),
                     # Point cloud generation
                     'pointcloud.enable': 'true',
@@ -218,6 +225,7 @@ def generate_launch_description():
         declare_enable_right,
         declare_front_resolution,
         declare_side_resolution,
+        declare_side_color,
         front_camera,
         left_camera,
         right_camera,

@@ -87,6 +87,11 @@ def generate_launch_description():
         'record_bag', default_value='true',
         description='Record diagnostic rosbag (~42 KB/s, no scans). Disable with record_bag:=false'
     )
+    declare_localization = DeclareLaunchArgument(
+        'localization', default_value='true',
+        description='Start map_server + AMCL on a saved map. false = Nav2 only, for a live '
+                    'slam_toolbox map (object search in an unmapped building)'
+    )
 
     # Launch configurations
     map_name = LaunchConfiguration('map_name')
@@ -112,7 +117,8 @@ def generate_launch_description():
             'map_name': map_name,
             'use_sim_time': use_sim_time,
             'rviz': 'false',
-        }.items()
+        }.items(),
+        condition=IfCondition(LaunchConfiguration('localization')),
     )
 
     # ========================================================================
@@ -392,6 +398,7 @@ def generate_launch_description():
         declare_use_collision_monitor,
         declare_use_imu_diagnostic,
         declare_record_bag,
+        declare_localization,
 
         localization_launch,
         # NOTE: odom_velocity_corrector comes from localization_launch

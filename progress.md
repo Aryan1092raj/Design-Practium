@@ -228,3 +228,28 @@ The launch defaults still point to v29 and v3. To make v30 and v5 the default, c
 Use this simulation (`gazebo_sim.launch.py` with `world_name:=small_house`) as the base. It already has Nav2, AMCL, the EKF fix, a generated map and named places, and the places are already hardcoded in `config/locations.yaml` as x, y (metres) and yaw (radians) in the map frame. Finishing a second simulation would repeat that setup.
 
 A separate half-finished simulation is only worth keeping if it has something this one lacks, such as a different world or layout. In that case, copy its world file into `src/wheelchair_description/worlds/`, generate its map with `scripts/world_to_map.py`, and add its places to `config/locations.yaml`.
+
+## Object search on the chair (phase 2, in progress)
+
+The same `object_nav.py` runs in the sim and on the chair. It reads the RealSense topic names (`/<cam>/color/image_raw`, `/<cam>/aligned_depth_to_color/image_raw`, `/<cam>/color/camera_info`), accepts both 32FC1 (Gazebo) and 16UC1 (RealSense) depth, and sends goals only through Nav2. `use_sim_time` is the one sim-only switch: pass `-p use_sim_time:=true` in the sim and leave it off on the chair.
+
+Two launch changes make the chair side possible, both off by default so existing runs are unchanged. `multi_camera.launch.py side_color:=true` turns on colour for the left and right cameras (object search needs it; it costs USB bandwidth, and `side_resolution:=424x240x6` is the fallback if a stream drops below 10 Hz). `wheelchair_fusion_nav.launch.py localization:=false` starts Nav2 without `map_server` and AMCL, for use with a live slam_toolbox map.
+
+Nothing else is needed from the localization launch. `run_slam` (`wheelchair_slam_mapping.launch.py`) already starts `robust_ekf_zupt_node`, which publishes `odom -> base_link` and `/odometry/filtered`, the odometry topic that `nav2_params_3cam_v30.yaml` reads. The localization launch's `odom_velocity_corrector` only feeds `/wheel_velocity` to its own EKF, and Nav2 does not read that topic.
+
+Bring-up on the chair, with the empty chair, wheels off the ground or in open space, and a hand on the e-stop:
+
+```bash
+run_slam   # terminal 1; this pkills all ROS 2 processes first, so start it first
+ros2 launch wc_control multi_camera.launch.py side_color:=true   # if run_slam does not start the cameras
+ros2 launch wheelchair_bringup wheelchair_fusion_nav.launch.py localization:=false use_rviz:=false \
+  record_bag:=false use_imu_diagnostic:=false use_collision_monitor:=true \
+  nav2_params:=$HOME/wheelchair_nav/src/wheelchair_navigation/config/nav2_params_3cam_v30.yaml \
+  bt_xml:=$HOME/wheelchair_nav/src/wheelchair_navigation/behavior_tree/wheelchair_robust_nav_v5.xml
+scripts/objnav_vlm_server.sh &
+cd ~/models && ros2 run wheelchair_description object_nav.py --ros-args -p detector:=$HOME/models/yoloe-26s-seg.pt
+```
+
+Start `object_nav.py` from `~/models`: YOLOE looks for its MobileCLIP text encoder (`mobileclip2_b.ts`) in the working directory and downloads it from GitHub when it is missing, which fails offline.
+
+Checks before any trial: `ros2 node list | grep -E "/amcl|/map_server"` prints nothing, every Nav2 node prints `active [3]`, the three `color/image_raw` topics run at 10 Hz or more, `/scan_fused` keeps its usual rate, and `/mapping_camera/aligned_depth_to_color/image_raw` reports `16UC1`. Trials follow the plan in `docs/superpowers/plans/2026-10-09-vlm-object-nav.md`, Task 11. None have been run on the chair yet.
