@@ -81,13 +81,17 @@ class VoiceNav(Node):
             self.say_async("Stopping.")
             return
         m = GO.search(t)
-        if not m:
+        # A bare place name ("kitchen.") counts as a command, because a pause often splits
+        # "take me to the" from the place; anything longer without a verb is ignored.
+        bare = re.sub(r"[^a-z ]", "", t).strip()
+        if not m and len(bare.split()) > 3:
             return  # ordinary speech near the chair is ignored
-        target = re.sub(r"\b(please|now|thanks?)\b", "", m["t"]).strip()
+        target = re.sub(r"\b(please|now|thanks?)\b", "", m["t"] if m else bare).strip()
         names = {k: k.replace("_", " ") for k in self.places}
         match = process.extractOne(target, names, scorer=fuzz.WRatio, score_cutoff=85)
         if not match:
-            self.say_async(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
+            if m:
+                self.say_async(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
             return
         if self.busy:
             self.say_async("I am already moving. Say stop first.")
@@ -169,7 +173,7 @@ def listen(node, stt):
         if loud or buf:
             buf.append(a)
             quiet = 0 if loud else quiet + 1
-            if quiet > 25 or len(buf) > 300:  # 0.75 s of silence ends it, 9 s max
+            if quiet > 40 or len(buf) > 300:  # 1.2 s of silence ends it, 9 s max
                 audio, buf = np.concatenate(buf), []
                 if len(audio) > 0.4 * 16000:
                     segments, _ = stt.transcribe(audio, language="en", beam_size=1,

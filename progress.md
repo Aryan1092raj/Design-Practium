@@ -49,7 +49,7 @@ Sim results from typed commands: the chair arrived at the bedroom, kitchen and l
 | Speech to text | faster-whisper, model `base.en`, CPU, `compute_type="int8"`, `beam_size=1`, `language="en"` |
 | Model cache | `~/.cache/huggingface/hub/models--Systran--faster-whisper-base.en` |
 | Place matching | rapidfuzz `WRatio`, score cutoff 85, against the names in `locations.yaml` |
-| Microphone capture | `arecord` (16 kHz, mono, S16_LE) from the default ALSA device, with an energy gate: speech starts above max(3 x running noise level, 0.01 RMS) and ends after 0.75 s of silence (9 s maximum) |
+| Microphone capture | `arecord` (16 kHz, mono, S16_LE) from the default ALSA device, with an energy gate: speech starts above max(3 x running noise level, 0.01 RMS) and ends after 1.2 s of silence (9 s maximum) |
 | Spoken replies | `spd-say`; the mic is muted while the chair speaks |
 | Navigation | Nav2 `NavigateToPose` for the trip, then `Spin` to the saved heading |
 | Localization | AMCL on a map generated from the world file, plus an EKF |
@@ -100,8 +100,10 @@ Open every terminal without conda, and start each one with:
 ```bash
 cd ~/wheelchair_nav
 source /opt/ros/jazzy/setup.bash && source install_src/setup.bash
-export FASTRTPS_DEFAULT_PROFILES_FILE=$HOME/fastdds_udp.xml
+source offline_env.sh
 ```
+
+`offline_env.sh` makes the sim work with no internet. Gazebo finds the ROS bridge by multicast, and with Wi-Fi down no interface carries multicast, so the bridge logs `Exception sending a multicast message: Network is unreachable` and the chair never spawns. The script turns multicast on for the loopback interface (asks for sudo once per boot), pins Gazebo to `127.0.0.1`, sets `HF_HUB_OFFLINE=1`, drops the proxy variables, and sets the Fast DDS profile.
 
 Terminal 1 starts the sim and Nav2 with the forward-first config (see "Forward-first navigation" below):
 
@@ -127,12 +129,10 @@ Terminal 3 starts the voice node. `HF_HUB_OFFLINE=1` skips the Hugging Face netw
 
 ```bash
 source .venv-voice/bin/activate
-export HF_HUB_OFFLINE=1
-unset NO_PROXY no_proxy
 ros2 run wheelchair_description voice_nav.py
 ```
 
-Say "take me to the bedroom", "kitchen" or "living room". Say "stop", "halt" or "cancel" during a trip.
+Say "take me to the bedroom", "kitchen" or "living room". A bare place name ("kitchen") also works, because a pause often splits the sentence. The recording ends after 1.2 s of silence. Say "stop", "halt" or "cancel" during a trip.
 
 ## Test without a microphone
 
