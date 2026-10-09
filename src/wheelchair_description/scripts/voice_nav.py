@@ -44,8 +44,8 @@ def wait(future):
 
 
 class VoiceNav(Node):
-    def __init__(self):
-        super().__init__("voice_nav")
+    def __init__(self, name="voice_nav"):
+        super().__init__(name)
         self.places = load_locations()
         self.create_subscription(String, "/voice/transcript", lambda m: self.on_text(m.data), 10)
         self.status = self.create_publisher(String, "/voice/status", 10)
@@ -87,7 +87,7 @@ class VoiceNav(Node):
         names = {k: k.replace("_", " ") for k in self.places}
         match = process.extractOne(target, names, scorer=fuzz.WRatio, score_cutoff=85)
         if not match:
-            self.say_async(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
+            self.on_unknown(target, names)
             return
         if self.busy:
             self.say_async("I am already moving. Say stop first.")
@@ -96,6 +96,10 @@ class VoiceNav(Node):
         self.cancelled.clear()
         threading.Thread(target=self.run, args=(match[0], self.places[match[2]]),
                          daemon=True).start()
+
+    def on_unknown(self, target, names):
+        """No saved place matches. object_nav.py overrides this to search with the cameras."""
+        self.say_async(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
 
     def run(self, name, p):
         try:
