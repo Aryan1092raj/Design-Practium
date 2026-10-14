@@ -76,3 +76,31 @@ class Verifier:
         except (requests.RequestException, KeyError, IndexError, ValueError) as e:
             log.error("VLM check failed: %s", e)
             return False
+
+
+class SceneScorer:
+    """CLIP similarity between a camera view and "a photo of a <target>": the cue approach B
+    uses to steer exploration toward areas that look like the target."""
+
+    def __init__(self, model="MobileCLIP-S2", pretrained="datacompdr", device="cuda:0"):
+        import open_clip
+        import torch
+        self.torch, self.device = torch, device
+        self.model, _, self.preprocess = open_clip.create_model_and_transforms(
+            model, pretrained=pretrained, device=device)
+        self.model.eval()
+        self.tokenizer = open_clip.get_tokenizer(model)
+        self.text = None
+
+    def set_target(self, name):
+        with self.torch.no_grad():
+            t = self.model.encode_text(self.tokenizer([f"a photo of a {name}"]).to(self.device))
+        self.text = t / t.norm(dim=-1, keepdim=True)
+
+    def score(self, rgb):
+        from PIL import Image
+        x = self.preprocess(Image.fromarray(rgb)).unsqueeze(0).to(self.device)
+        with self.torch.no_grad():
+            f = self.model.encode_image(x)
+        f = f / f.norm(dim=-1, keepdim=True)
+        return float((f @ self.text.T).item())

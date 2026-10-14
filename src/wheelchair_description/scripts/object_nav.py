@@ -33,7 +33,8 @@ from sensor_msgs.msg import CameraInfo, Image
 from objnav_frontiers import find_frontiers, pick
 from objnav_geometry import (STANDOFF, Grid, Hit, Hits, box_mask, mask_centre, object_depth,
                              pixel_to_optical, quat_to_matrix, standoff)
-from objnav_models import Detector, Verifier
+from objnav_models import Detector, SceneScorer, Verifier
+from objnav_value import ValueMap
 from voice_nav import VoiceNav, listen, wait
 
 CAMERAS = ["camera", "mapping_camera", "right_camera"]  # front, left, right (RealSense names)
@@ -100,6 +101,11 @@ class ObjectNav(VoiceNav):
         self.create_subscription(OccupancyGrid, "/global_costmap/costmap",
                                  lambda m: setattr(self, "costmap", m), LATCHED)
         self.deadline, self.travelled = 0.0, 0.0
+        self.semantic = self.declare_parameter("semantic", False).value
+        self.scorer = SceneScorer(self.declare_parameter("clip_model", "MobileCLIP-S2").value,
+                                  self.declare_parameter("clip_pretrained", "datacompdr").value,
+                                  self.get_parameter("device").value) if self.semantic else None
+        self.values, self.scored = None, {}
 
     def on_unknown(self, target, names):
         if self.busy:
@@ -125,15 +131,26 @@ class ObjectNav(VoiceNav):
                     self.say("My map or cameras are not ready yet. Please ask again in a moment.")
                 return
             self.detector.set_target(target)
-            hits, tried, trips, boots = Hits(), [], 0, 0
+            if self.semantic:
+                self.scorer.set_target(target)
+                self.values, self.scored = ValueMap(), {}
+            hits, tried, trips, boots, pending = Hits(), [], 0, 0, None
             self.look(hits)
             if hits.ready() is None:  # the cameras cover ~259 deg, so look behind once
                 self.run_and_look(self.spin_client, spin_goal(math.pi), hits)
             while not self.cancelled.is_set():
-                obj = self.confirmed(hits, target)
+                obj = pending if pending is not None else self.confirmed(hits, target)
                 if obj is not None:
-                    found = self.approach(target, obj)
-                    return
+                    result = self.approach(target, obj)
+                    if result is not None:
+                        found = result
+                        return
+                    if pending is None:
+                        self.say(f"I see the {target}, but the map is not ready around it. "
+                                 "I will explore and try again.")
+                    # keep the position, drop its hits so they no longer cut exploration short
+                    pending = obj
+                    hits.reject(obj)
                 frontier = None
                 if trips < MAX_TRIPS and time.monotonic() < self.deadline:
                     frontier = self.next_frontier(tried)
@@ -144,7 +161,8 @@ class ObjectNav(VoiceNav):
                             continue  # the bootstrap saw the object; check it first
                 if frontier is None:
                     if not self.cancelled.is_set():
-                        self.say(f"I could not find the {target}.")
+                        self.say(f"I see the {target}, but I can't find a free spot next to it."
+                                 if pending is not None else f"I could not find the {target}.")
                     return
                 trips += 1
                 chair = self.chair_pose() or (frontier.x, frontier.y, 0.0)
@@ -220,8 +238,7 @@ class ObjectNav(VoiceNav):
             return True
         goal = standoff(obj, chair[:2], to_grid(self.costmap))
         if goal is None:
-            self.say(f"I see the {target}, but I can't find a free spot next to it.")
-            return False
+            return None  # no free cell yet; search() keeps exploring and retries
         self.say(f"I found the {target}, {dist:.0f} metres away. Going there. Say stop to cancel.")
         if self.cancelled.wait(2.0):
             return False
@@ -276,9 +293,6 @@ class ObjectNav(VoiceNav):
                 self.get_logger().warn(f"{cam}: aligned depth {depth.shape} != colour "
                                        f"{rgb.shape[:2]}", throttle_duration_sec=10.0)
                 continue
-            dets = self.detector.detect(rgb)
-            if not dets:
-                continue
             try:
                 tf = self.tf.lookup_transform("map", f["depth"].header.frame_id,
                                               Time.from_msg(f["depth"].header.stamp),
@@ -288,7 +302,12 @@ class ObjectNav(VoiceNav):
                 continue
             q, p = tf.transform.rotation, tf.transform.translation
             r, t = quat_to_matrix(q.x, q.y, q.z, q.w), np.array([p.x, p.y, p.z])
-            for box, score, mask in dets:
+            if self.semantic and time.monotonic() - self.scored.get(cam, 0.0) > 1.0:
+                self.scored[cam] = time.monotonic()
+                k = f["info"].k
+                self.values.update(t[0], t[1], math.atan2(r[1, 2], r[0, 2]),  # optical z axis
+                                   2 * math.atan(f["info"].width / (2 * k[0])), self.scorer.score(rgb))
+            for box, score, mask in self.detector.detect(rgb):
                 m = mask if mask is not None and mask.shape == depth.shape else box_mask(depth.shape, box)
                 z = object_depth(depth, m)
                 if z is None:
@@ -312,7 +331,8 @@ class ObjectNav(VoiceNav):
         chair = self.chair_pose()
         if chair is None or self.map is None or self.costmap is None:
             return None
-        return pick(find_frontiers(to_grid(self.map), to_grid(self.costmap)), chair[:2], tried)
+        value = self.values.at if self.semantic else None
+        return pick(find_frontiers(to_grid(self.map), to_grid(self.costmap)), chair[:2], tried, value)
 
 
 def main():
