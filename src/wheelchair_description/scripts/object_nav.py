@@ -109,7 +109,7 @@ class ObjectNav(VoiceNav):
 
     def on_unknown(self, target, names):
         if self.busy:
-            self.say_async("I am already moving. Say stop first.")
+            self.say("I am already moving. Say stop first.")
             return
         self.busy = True
         self.cancelled.clear()
@@ -340,7 +340,7 @@ def main():
     node = ObjectNav()
     stt = WhisperModel("base.en", device="cpu", compute_type="int8")
     threading.Thread(target=listen, args=(node, stt), daemon=True).start()
-    node.say_async("Object search ready.")
+    node.say("Object search ready.")
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

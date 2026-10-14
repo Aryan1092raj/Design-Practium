@@ -199,7 +199,7 @@ slower.
 
 `voice_nav.py` listens on the laptop microphone, transcribes with faster-whisper (`base.en`, on
 the CPU), matches "go to / take me to <place>" against `locations.yaml`, and sends the place to
-Nav2. It speaks its replies with `spd-say` and ignores speech that is not a command.
+Nav2. It prints its replies in the terminal (and on `/voice/status`; the real chair has no speaker) and ignores speech that is not a command.
 
 One-time setup (the first run also downloads the whisper model):
 

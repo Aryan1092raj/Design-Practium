@@ -4,7 +4,7 @@
 Listens on the laptop mic and turns speech into text with faster-whisper. A command like
 "go to / take me to <place>" is matched against the named places in config/locations.yaml,
 and the place's pose is sent to Nav2 as a NavigateToPose goal. Nav2 does all the driving;
-saying "stop" cancels the goal. Replies are spoken with spd-say.
+saying "stop" cancels the goal. Replies are printed in the terminal and published on /voice/status.
 
 Runs inside .venv-voice, with Nav2 and the saved map already up:
     ros2 run wheelchair_description voice_nav.py
@@ -55,22 +55,12 @@ class VoiceNav(Node):
         self.spin_client = ActionClient(self, Spin, "spin")
         self.goal_handle = None
         self.busy = False
-        self.speaking = False
         self.cancelled = threading.Event()
 
     def say(self, text):
+        """Replies are printed and published on /voice/status; the real chair has no speaker."""
         self.get_logger().info(text)
         self.status.publish(String(data=text))
-        self.speaking = True  # the mic thread drops audio meanwhile, so the chair never hears itself
-        try:
-            subprocess.run(["spd-say", "-w", text], timeout=20)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        time.sleep(0.3)
-        self.speaking = False
-
-    def say_async(self, text):
-        threading.Thread(target=self.say, args=(text,), daemon=True).start()
 
     def on_text(self, text):
         t = text.lower()
@@ -78,19 +68,23 @@ class VoiceNav(Node):
             self.cancelled.set()
             if self.goal_handle:
                 self.goal_handle.cancel_goal_async()
-            self.say_async("Stopping.")
+            self.say("Stopping.")
             return
         m = GO.search(t)
-        if not m:
+        # A bare place name ("kitchen.") counts as a command, because a pause often splits
+        # "take me to the" from the place; anything longer without a verb is ignored.
+        bare = re.sub(r"[^a-z ]", "", t).strip()
+        if not m and len(bare.split()) > 3:
             return  # ordinary speech near the chair is ignored
-        target = re.sub(r"\b(please|now|thanks?)\b", "", m["t"]).strip()
+        target = re.sub(r"\b(please|now|thanks?)\b", "", m["t"] if m else bare).strip()
         names = {k: k.replace("_", " ") for k in self.places}
         match = process.extractOne(target, names, scorer=fuzz.WRatio, score_cutoff=85)
         if not match:
-            self.on_unknown(target, names)
+            if m:
+                self.on_unknown(target, names)
             return
         if self.busy:
-            self.say_async("I am already moving. Say stop first.")
+            self.say("I am already moving. Say stop first.")
             return
         self.busy = True
         self.cancelled.clear()
@@ -99,7 +93,7 @@ class VoiceNav(Node):
 
     def on_unknown(self, target, names):
         """No saved place matches. object_nav.py overrides this to search with the cameras."""
-        self.say_async(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
+        self.say(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
 
     def run(self, name, p):
         try:
@@ -162,9 +156,6 @@ def listen(node, stt):
         chunk = proc.stdout.read(960)  # 30 ms
         if not chunk:
             break
-        if node.speaking:
-            buf = []
-            continue
         a = np.frombuffer(chunk, np.int16).astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(a * a)))
         if not buf:
@@ -173,7 +164,7 @@ def listen(node, stt):
         if loud or buf:
             buf.append(a)
             quiet = 0 if loud else quiet + 1
-            if quiet > 25 or len(buf) > 300:  # 0.75 s of silence ends it, 9 s max
+            if quiet > 40 or len(buf) > 300:  # 1.2 s of silence ends it, 9 s max
                 audio, buf = np.concatenate(buf), []
                 if len(audio) > 0.4 * 16000:
                     segments, _ = stt.transcribe(audio, language="en", beam_size=1,
@@ -189,7 +180,7 @@ def main():
     node = VoiceNav()
     stt = WhisperModel("base.en", device="cpu", compute_type="int8")
     threading.Thread(target=listen, args=(node, stt), daemon=True).start()
-    node.say_async("Voice navigation ready.")
+    node.say("Voice navigation ready.")
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
