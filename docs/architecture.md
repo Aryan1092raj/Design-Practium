@@ -315,7 +315,7 @@ Each step can be checked in the simulation before it goes near the chair.
 | Wake word | None; only "go to ..." and "stop" phrases do anything | openWakeWord or a push-to-talk button if it triggers falsely |
 | Speech to text | faster-whisper `base.en`, int8 on the CPU, prompted with the place names | `small.en`; CUDA on the Jetson |
 | Command matching | Regular expressions plus `rapidfuzz` (score at least 85) | A small LLM (for example Qwen2.5 1.5B with a JSON grammar) if phrasing varies too much |
-| Text to speech | `spd-say` (speech-dispatcher, preinstalled on Ubuntu) | Piper |
+| Replies | Printed to the terminal and published on `/voice/status`; nothing is spoken | Piper, if spoken replies are wanted again |
 | Python environment | `.venv-voice`, created with `--system-site-packages` | |
 | VLM (phase 2) | Qwen2.5-VL 3B, served by the llama.cpp server bundled with Ollama, on the GPU | |
 
