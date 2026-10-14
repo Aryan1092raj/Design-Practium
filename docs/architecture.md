@@ -123,7 +123,7 @@ Saving a place is manual today: `ros2 topic echo --once /amcl_pose --field pose.
 
 ## 5. Phase 1: voice to a named place
 
-`voice_nav.py` is one long-running ROS 2 node that does the whole chain, from microphone to Nav2 goal to spoken reply.
+`voice_nav.py` is one long-running ROS 2 node that does the whole chain, from microphone to Nav2 goal to a printed reply.
 
 ```mermaid
 flowchart TD
@@ -149,7 +149,7 @@ flowchart TD
     RES -- "failed" --> FAILED["Say: I could not reach the X."]
 ```
 
-While the chair is speaking (with `spd-say`), the microphone thread throws audio away, so the chair does not react to its own words, such as "say stop to cancel".
+The chair does not speak: replies are printed and published on `/voice/status`, so the microphone never picks up the chair's own words.
 
 The turn at the end exists because the chair's Nav2 configuration ignores the goal heading (`yaw_goal_tolerance: 6.28`). After arriving, the node asks the behavior server's Spin action to turn to the saved yaw when the error is above 0.3 rad. Spin checks for collisions and can refuse next to furniture; the chair then keeps the heading it arrived with.
 
@@ -182,7 +182,7 @@ The node's interfaces:
 | Interface | Type | Direction | Use |
 |---|---|---|---|
 | `/voice/transcript` | `std_msgs/String` | subscribed | Typed commands for testing; the microphone path calls the same handler directly |
-| `/voice/status` | `std_msgs/String` | published | Every sentence the chair speaks |
+| `/voice/status` | `std_msgs/String` | published | Every reply the chair prints (no speech output) |
 | `navigate_to_pose` | `nav2_msgs/action/NavigateToPose` | action client | Drive to the place |
 | `spin` | `nav2_msgs/action/Spin` | action client | Turn to the saved heading |
 | TF `map -> base_link` | transform | read | Current heading, for the turn |

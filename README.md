@@ -135,12 +135,56 @@ run_slam hospital_mode:=true    # long-range corridor config
 **Voice.** With `run_nav` (or the simulation) up, `voice_nav.py` turns a spoken
 "take me to the kitchen" into a Nav2 goal for a named place, and "stop" cancels it.
 Setup and usage are in `AUTONOMOUS_NAV.md` (section 2.7); the design is in
-`docs/architecture.md`.
+`docs/architecture.md`. Replies are printed in the terminal and published on `/voice/status`;
+the chair has no speaker. Voice navigation uses the saved map and the places in
+`src/wheelchair_description/config/locations.yaml` (bedroom, kitchen, living_room). It does not
+use the cameras or the VLM.
+
+To run it in the simulation, use three terminals from `~/wheelchair_nav`. The sim needs 4-6 GB
+of free RAM, so close browsers first. One-time setup (the UDP-only DDS profile and the voice
+venv) is in `AUTONOMOUS_NAV.md`, section 1 and section 2.7.
+
+Terminal 1, the sim with Nav2 on the saved map:
 
 ```bash
+cd ~/wheelchair_nav
+export PATH=/usr/bin:$PATH   # only if conda (base) is active
+source setup.bash --skip
+export FASTRTPS_DEFAULT_PROFILES_FILE=$HOME/fastdds_udp.xml
+ros2 launch wheelchair_description gazebo_sim.launch.py world_name:=small_house use_rviz:=false nav2:=true map:=$HOME/wheelchair_nav/maps/small_house_world.yaml
+```
+
+Terminal 2, after about 45 s: check that Nav2 is up (all eight print `active [3]`), then set the
+start pose.
+
+```bash
+cd ~/wheelchair_nav
+source setup.bash --skip
+export FASTRTPS_DEFAULT_PROFILES_FILE=$HOME/fastdds_udp.xml
+for n in map_server amcl controller_server planner_server behavior_server bt_navigator velocity_smoother waypoint_follower; do printf '%s: ' $n; ros2 lifecycle get /$n; done
+ros2 topic pub --once -w 1 /initialpose geometry_msgs/msg/PoseWithCovarianceStamped "{header: {frame_id: map}, pose: {pose: {position: {x: 0.0, y: 0.0}, orientation: {w: 1.0}}, covariance: [0.25,0,0,0,0,0, 0,0.25,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0.07]}}"
+```
+
+Terminal 3, the voice node:
+
+```bash
+cd ~/wheelchair_nav
+source setup.bash --skip
+export FASTRTPS_DEFAULT_PROFILES_FILE=$HOME/fastdds_udp.xml HF_HUB_OFFLINE=1
+unset HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy   # NO_PROXY "::1" crashes httpx in faster-whisper
 source .venv-voice/bin/activate
 ros2 run wheelchair_description voice_nav.py
 ```
+
+When it prints `Voice navigation ready.`, say "take me to the kitchen" (also bedroom or living
+room), or type the command from terminal 2:
+
+```bash
+ros2 topic pub --once /voice/transcript std_msgs/msg/String "{data: 'take me to the kitchen'}"
+```
+
+Say or publish "stop" to cancel a trip. Stop with Ctrl+C in terminals 3 and 1, and kill any
+leftover `gz sim` process before the next launch.
 
 ## Pipeline
 
