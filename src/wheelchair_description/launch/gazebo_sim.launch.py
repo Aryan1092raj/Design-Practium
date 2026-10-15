@@ -143,14 +143,14 @@ def generate_launch_description():
     )
     declare_nav2_params_file = DeclareLaunchArgument(
         "nav2_params_file",
-        default_value=os.path.join(pkg_navigation, "config", "nav2_params_3cam_v29.yaml"),
+        default_value=os.path.join(pkg_navigation, "config", "nav2_params_3cam_v30.yaml"),
         description="The real-robot Nav2 config to reuse, so simulated tuning matches the "
                     "chair; config/nav2_sim.yaml is layered on top for sim time and /scan"
     )
     declare_bt_xml = DeclareLaunchArgument(
         "bt_xml",
         default_value=os.path.join(pkg_navigation, "behavior_tree",
-                                   "wheelchair_robust_nav_v3.xml"),
+                                   "wheelchair_robust_nav_v5.xml"),
         description="Nav2 behaviour tree, same as the one the real robot uses"
     )
     declare_collision_monitor = DeclareLaunchArgument(

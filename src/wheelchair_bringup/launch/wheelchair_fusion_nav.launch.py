@@ -39,8 +39,8 @@ def generate_launch_description():
 
     # Default configurations - use package paths where possible
     default_map_file = os.path.join(ws_root, 'maps', 'h2.yaml')
-    default_nav2_params = os.path.join(wheelchair_navigation_dir, 'config', 'nav2_params_3cam_v29.yaml')
-    default_bt_xml = os.path.join(wheelchair_navigation_dir, 'behavior_tree', 'wheelchair_robust_nav_v3.xml')
+    default_nav2_params = os.path.join(wheelchair_navigation_dir, 'config', 'nav2_params_3cam_v30.yaml')
+    default_bt_xml = os.path.join(wheelchair_navigation_dir, 'behavior_tree', 'wheelchair_robust_nav_v5.xml')
     default_rviz_config = os.path.join(wheelchair_description_dir, 'rviz', 'fusion_nav_lite.rviz')
 
     # ========================================================================
