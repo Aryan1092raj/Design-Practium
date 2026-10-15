@@ -150,7 +150,9 @@ def listen(node, stt):
     """Energy-gated recording from the default ALSA mic; each utterance goes to faster-whisper."""
     proc = subprocess.Popen(["arecord", "-q", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"],
                             stdout=subprocess.PIPE)
-    hint = "go to the " + ", ".join(k.replace("_", " ") for k in node.places) + ". stop."
+    # With no saved places (object_nav) the hint would be "go to the . stop.", which Whisper echoes as a phantom "stop".
+    hint = ("go to the " + ", ".join(k.replace("_", " ") for k in node.places) + ". stop.") \
+        if node.places else None
     noise, buf, quiet = None, [], 0
     while rclpy.ok():
         chunk = proc.stdout.read(960)  # 30 ms

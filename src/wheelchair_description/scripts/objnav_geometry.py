@@ -75,11 +75,11 @@ def quat_to_matrix(x, y, z, w):
 
 
 def standoff(obj, chair, costmap):
-    """First free spot short of the object, trying wider angles and then longer distances.
-    Returns (x, y, yaw) with yaw facing the object, or None."""
+    """First free spot short of the object, trying wider angles (all the way round) and then
+    longer distances. Returns (x, y, yaw) with yaw facing the object, or None."""
     base = math.atan2(obj[1] - chair[1], obj[0] - chair[0])
     for dist in STANDOFF:
-        for dth in (0.0, 0.5, -0.5, 1.0, -1.0):
+        for dth in (0.0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5, 2.0, -2.0, 2.5, -2.5, math.pi):
             a = base + dth
             x, y = obj[0] - dist * math.cos(a), obj[1] - dist * math.sin(a)
             if is_free(costmap, x, y):

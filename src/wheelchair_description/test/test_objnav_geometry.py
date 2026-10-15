@@ -62,6 +62,13 @@ def test_standoff_faces_object_from_first_free_spot():
     assert (x, y, yaw) == pytest.approx((3.1, 5.0, 0.0))
 
 
+def test_standoff_uses_far_side_when_chair_side_is_blocked():
+    g = Grid(np.full((100, 100), 100, np.int8), 0.1, 0.0, 0.0)
+    g.data[48:53, 69:74] = 0  # only around (7.1, 5.0), behind the object as seen from the chair
+    x, y, yaw = standoff((5.0, 5.0), (1.0, 5.0), g)
+    assert (x, y, yaw) == pytest.approx((6.5, 5.0, math.pi), abs=0.7)
+
+
 def test_standoff_none_when_boxed_in():
     g = Grid(np.full((100, 100), 100, np.int8), 0.1, 0.0, 0.0)
     assert standoff((5.0, 5.0), (1.0, 5.0), g) is None
