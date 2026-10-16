@@ -1,0 +1,23 @@
+"""Adds one tiny subscriber to /voice/object_request.
+
+This lets the SLM-powered voice node trigger the existing VLM/object-nav search
+without modifying the object_nav search code itself. object_nav continues to run
+its own mic/ASR loop, but can also be requested externally by a different node.
+"""
+
+# Add this inside ObjectNav.__init__ in src/wheelchair_description/scripts/object_nav.py
+# near the other subscriptions and the /voice/transcript subscription.
+
+# Example snippet:
+#
+# def on_object_request(self, msg):
+#     if self.busy:
+#         self.say("I am already moving. Say stop first.")
+#         return
+#     self.busy = True
+#     self.cancelled.clear()
+#     threading.Thread(target=self.search, args=(msg.data,), daemon=True).start()
+#
+# self.create_subscription(String, "/voice/object_request", self.on_object_request, 10)
+#
+# This keeps the VLM search path exactly as-is while allowing voice_nav_slm.py to trigger it.
