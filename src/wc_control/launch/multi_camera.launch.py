@@ -102,8 +102,8 @@ def generate_launch_description():
                     'depth_module.emitter_enabled': 'true',
                     'align_depth.enable': 'true',
                     'enable_sync': 'true',
-                    'rgb_camera.profile': LaunchConfiguration('front_resolution'),
-                    'depth_module.profile': LaunchConfiguration('front_resolution'),
+                    'rgb_camera.color_profile': LaunchConfiguration('front_resolution'),
+                    'depth_module.depth_profile': LaunchConfiguration('front_resolution'),
                     # Point cloud generation
                     'pointcloud.enable': 'true',
                     'pointcloud.stream_filter': '2',  # RS2_STREAM_DEPTH
@@ -148,7 +148,7 @@ def generate_launch_description():
                     'align_depth.enable': 'true',
                     'enable_sync': 'true',
                     'enable_color': 'false',  # Depth only - saves USB bandwidth
-                    'depth_module.profile': LaunchConfiguration('side_resolution'),
+                    'depth_module.depth_profile': LaunchConfiguration('side_resolution'),
                     # Point cloud generation
                     'pointcloud.enable': 'true',
                     'pointcloud.stream_filter': '2',
@@ -191,7 +191,7 @@ def generate_launch_description():
                     'align_depth.enable': 'true',
                     'enable_sync': 'true',
                     'enable_color': 'false',  # Depth only - saves USB bandwidth
-                    'depth_module.profile': LaunchConfiguration('side_resolution'),
+                    'depth_module.depth_profile': LaunchConfiguration('side_resolution'),
                     # Point cloud generation
                     'pointcloud.enable': 'true',
                     'pointcloud.stream_filter': '2',

@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wheelchair voice + VLM navigation: flow</title>
+<style>
+  :root { --bg:#0e1014; --card:#14171d; --line:#2a303a; --ink:#d9dee7; --dim:#7f8896; --accA:#5fd0b0; --accB:#f2b84b;
+          --sim:#5bd18b; --wip:#f0b429; --chair:#6ea8ff; --untested:#ff7a7a; --acc:var(--accA); }
+  body.modeB { --acc:var(--accB); }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 system-ui,sans-serif; padding:24px; }
+  .card { max-width:1240px; margin:0 auto; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 18px 12px; }
+  .top, .bot { display:flex; justify-content:space-between; align-items:center; gap:16px; }
+  .fig { color:var(--dim); font-size:12px; letter-spacing:.08em; text-transform:uppercase; }
+  .title { font-weight:600; }
+  .modes { display:flex; gap:8px; margin:10px 0 4px; }
+  button { background:transparent; color:var(--dim); border:1px solid var(--line); border-radius:8px; padding:6px 12px; font:inherit; cursor:pointer; transition:all .25s ease; }
+  button.on { color:var(--ink); border-color:var(--acc); box-shadow:inset 0 0 0 1px var(--acc); }
+  svg { width:100%; height:auto; display:block; }
+  .lane { fill:#12151a; stroke:var(--line); stroke-width:.6; }
+  .lbl { fill:var(--dim); font-size:10px; letter-spacing:.1em; }
+  .node rect { fill:#1a1e26; stroke:#3a4250; stroke-width:.8; transition:opacity .35s ease, stroke .35s ease; }
+  .node { cursor:pointer; transition:opacity .35s ease; }
+  .node.off { opacity:.18; }
+  .node.sel rect, .node:hover rect { stroke:var(--acc); }
+  .node .t { fill:var(--ink); font-size:11.5px; font-weight:600; text-anchor:middle; }
+  .node .s { fill:var(--dim); font-size:9.3px; text-anchor:middle; }
+  .edge { fill:none; stroke:#4a5362; stroke-width:1; transition:opacity .35s ease, stroke .35s ease; }
+  .edge.dash { stroke-dasharray:4 3; }
+  .edge.off { opacity:.1; }
+  .edge.on { stroke:var(--acc); opacity:.75; }
+  .pkt { fill:var(--acc); }
+  .elbl { fill:var(--dim); font-size:9px; transition:opacity .35s ease; }
+  .elbl.off { opacity:.1; }
+  .panel { margin-top:10px; border:1px solid var(--line); border-radius:10px; background:#12151a; padding:14px 18px; }
+  .panel h2 { margin:0 0 2px; font-size:16px; }
+  .panel .sum { color:var(--dim); margin:0 0 10px; }
+  .panel .chip { font-size:11px; border:1px solid var(--line); border-radius:99px; padding:1px 9px; margin-left:8px; vertical-align:middle; font-weight:400; }
+  .panel .cols { display:grid; grid-template-columns:1fr 1.4fr 1fr; gap:22px; }
+  .panel h3 { margin:0 0 4px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--acc); }
+  .panel ul, .panel ol { margin:0; padding-left:18px; }
+  .panel li { margin-bottom:4px; }
+  .panel .io { margin-top:12px; color:var(--dim); }
+  .panel .io b { color:var(--ink); font-weight:600; }
+  .panel .back { float:right; font-size:12px; padding:2px 10px; }
+  @media (max-width:900px) { .panel .cols { grid-template-columns:1fr; } }
+  .bot { margin-top:6px; font-size:12.5px; }
+  .hint { color:var(--dim); }
+  .readout { text-align:right; max-width:70%; }
+  .readout b { color:var(--acc); }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; max-width:1240px; margin:10px auto 0; color:var(--dim); font-size:12px; }
+  .legend i { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="top"><span class="fig">Fig 1</span><span class="title">Wheelchair voice + VLM navigation</span></div>
+  <div class="modes">
+    <button id="mA" class="on">Saved place: "take me to the kitchen" (AMCL)</button>
+    <button id="mB">Object: "take me to the sofa" (VLM + slam_toolbox)</button>
+  </div>
+  <svg id="svg" viewBox="0 30 1180 590" role="img" aria-label="Flowchart of voice and VLM navigation on the wheelchair"></svg>
+  <div class="panel" id="panel"></div>
+  <div class="bot">
+    <span class="hint">Switch the mode above. Click any box for what it uses and how it works.</span>
+    <span class="readout" id="out"></span>
+  </div>
+</div>
+<div class="legend">
+  <span><i style="background:var(--sim)"></i>tested in Gazebo</span>
+  <span><i style="background:var(--wip)"></i>work in progress (VLM branch, no full sim run yet)</span>
+  <span><i style="background:var(--chair)"></i>existing chair pipeline, not re-tested in this work</span>
+  <span><i style="background:var(--untested)"></i>never run (microphone path)</span>
+</div>
+
+<script>
+// Facts come from docs/how-it-works.md and docs/architecture.md.
+const W = 128, H = 46, X0 = 190, DX = 155;
+const LANES = [
+  { name: 'VOICE',        y0: 40,  y1: 150, cy: [100] },
+  { name: 'VLM SEARCH',   y0: 160, y1: 290, cy: [200, 260] },
+  { name: 'NAV2',         y0: 300, y1: 390, cy: [345] },
+  { name: 'LOCALISATION', y0: 400, y1: 490, cy: [445] },
+  { name: 'HARDWARE',     y0: 500, y1: 600, cy: [545] },
+];
+// id, lane, row, column, title, sub, status, modes, details
+const N = [
+  ['mic',   0,0,0,'Microphone','arecord 16 kHz','untested','AB','Laptop mic via arecord, 16 kHz mono, 30 ms chunks. Not tested yet: the sim runs used typed text on /voice/transcript.'],
+  ['gate',  0,0,1,'Energy gate','> 3x noise floor','untested','AB','A chunk is speech when louder than 3x the running background level (floor 0.01).'],
+  ['rec',   0,0,2,'Record','ends after 1.2 s quiet','untested','AB','Records until 1.2 s of silence, 9 s at most.'],
+  ['stt',   0,0,3,'faster-whisper','base.en, CPU int8','sim','AB','Speech to text on the CPU. Prompted with the place names so they are spelled right.'],
+  ['parse', 0,0,4,'Parse intent','stop / go to X','sim','AB','"stop", "halt", "cancel" is matched first and cancels the Nav2 goal at any point. "go / take me / drive to X" extracts X. Other speech is ignored.'],
+  ['match', 0,0,5,'Match place','rapidfuzz >= 85','sim','AB','Fuzzy match against locations.yaml (bedroom, kitchen, living_room). A match goes to Nav2 after "Going to the X" and a 2 s wait. No match starts the VLM search.'],
+
+  ['ping',  1,0,0,'Check VLM','llama.cpp :8091','wip','B','Pings the llama-server /health. If down, the chair says so and does not drive.'],
+  ['yoloe', 1,0,1,'YOLOE detect','3 cams, every 0.5 s','wip','B','YOLOE yoloe-26s-seg on the GPU. The spoken word is its only class, so any object name works without training. Runs on front, left and right RGB-D images.'],
+  ['depth', 1,0,2,'Box to map point','depth 0.3-5 m + TF','wip','B','Box plus aligned depth gives a 3D point, converted to the map frame through TF. Depth outside 0.3-5 m is dropped.'],
+  ['cluster',1,0,3,'Cluster hits','2 views < 0.5 m','wip','B','A hit counts only when a second hit lands within 0.5 m from a different viewpoint (other camera, 0.3 m of travel or 0.3 rad of turn).'],
+  ['verify',1,0,4,'Qwen3-VL-2B','full frame: yes / no','wip','B','The vision-language model that confirms the object. It sees the whole frame with the box in red and answers yes or no. "No" ignores that spot for the command. Server errors count as "no".'],
+  ['stand', 1,0,5,'Standoff goal','1.5-2.4 m short','wip','B','Picks a free costmap cell 1.5 / 1.9 / 2.4 m short of the object, announces, waits 2 s, drives, then turns to face it.'],
+  ['explore',1,1,3,'Explore frontier','MobileCLIP ranks','wip','B','No confirmed object: go to a frontier (known free cell next to unknown) on the live slam_toolbox map. Step B weighs how much the area looks like the target. Gives up after 300 s or 20 trips.'],
+
+  ['goal',  2,0,0,'NavigateToPose','goal in map frame','sim','AB','The only way the voice and VLM code move the chair. Neither publishes a velocity command.'],
+  ['bt',    2,0,1,'Behavior tree v5','replans at 0.5 Hz','sim','AB','wheelchair_robust_nav_v5.xml. Recoveries, forward first: clear costmaps, wait 3 s, spin 60 deg each way, back up 30 cm, last resort reverse up to 4 s. Gives up after about 17 s.'],
+  ['plan',  2,0,2,'SmacPlannerHybrid','Dubin, forward only','sim','AB','Hybrid-A* from the real heading with the 0.9 x 0.7 m footprint. Min turning radius 0.40 m. A goal behind the chair becomes a forward turn-around curve.'],
+  ['ctrl',  2,0,3,'Pure Pursuit','0.25 m/s, no reverse','sim','AB','Regulated Pure Pursuit, allow_reversing false. Rotates in place first when the path is over 45 deg off heading. Stops if the footprint would hit something within 1 s.'],
+  ['smooth',2,0,4,'Velocity smoother','0.25 m/s, 0.5 rad/s','chair','AB','Limits acceleration before the command reaches the wheels.'],
+  ['mon',   2,0,5,'Collision monitor','off by default','chair','AB','use_collision_monitor:=false by default in run_nav and the sim. Decide whether voice trials on the chair run with it on.'],
+
+  ['map',   3,0,1,'Saved map','.pgm + .yaml','chair','A','Built once with run_slam: drive the chair by hand, close loops, Ctrl+C saves the map to maps/session_*/. map_server then serves it.'],
+  ['amcl',  3,0,2,'AMCL','map to odom','chair','A','Localises on the saved map using /scan_fused and ZUPT odometry. Needs a start pose (chair at the map origin or /initialpose). Used for saved places.'],
+  ['slam',  3,0,3,'slam_toolbox','live map','wip','B','Builds the map while the chair searches, so unknown buildings work. Also what run_slam uses to make the saved map. Used for the object search.'],
+  ['cost',  3,0,5,'Costmaps','global + local','chair','AB','Built from /scan_fused plus the map. The planner and controller read them.'],
+
+  ['lidar', 4,0,0,'RPLidar S3','/scan','chair','AB','2D LiDAR, laser-filtered to scan_filtered.'],
+  ['cams',  4,0,1,'3x RealSense','front, left, right','chair','AB','Front D455 above head height (the only IMU), left D455 and right D435i at armrest height. Up to 259 deg of coverage around the occupant.'],
+  ['prism', 4,0,2,'PRISM-Nav fusion','/scan_fused','chair','AB','Height-filters camera depth (0.10-1.80 m), projects it into LiDAR bins and takes the per-bin minimum before SLAM/AMCL, so map, costmaps and localisation share one geometry.'],
+  ['joy',   4,0,3,'Joystick + E-stop','independent of all','chair','AB','The joystick and the hardware emergency stop work independently of the software stack.'],
+  ['zupt',  4,0,4,'ZUPT odometry','odom to base_link','chair','AB','Clamps velocity and recalibrates gyro bias whenever encoders and accelerometer agree the chair is still. Bounds heading drift between trips. (The sim uses a robot_localization EKF instead.)'],
+  ['ard',   4,0,5,'Arduino diff drive','motors + encoders','chair','AB','Arduino Mega drives the motors and reads the encoders. In the sim this is the gz diff_drive plugin.'],
+];
+const node = {};
+N.forEach(([id, l, r, c, t, s, st, m, d]) => {
+  node[id] = { id, t, s, st, m, d, x: X0 + DX * c, y: LANES[l].cy[r] };
+});
+const R = id => [node[id].x + W / 2, node[id].y];
+const L = id => [node[id].x - W / 2, node[id].y];
+const T = (id, dx = 0) => [node[id].x + dx, node[id].y - H / 2];
+const B = (id, dx = 0) => [node[id].x + dx, node[id].y + H / 2];
+const hop = (a, b) => [R(a), L(b)];
+// from, to, points, modes, dashed, label [text, x, y]
+const E = [
+  [ 'mic','gate',  hop('mic','gate'),  'AB'], ['gate','rec', hop('gate','rec'), 'AB'], ['rec','stt', hop('rec','stt'), 'AB'],
+  [ 'stt','parse', hop('stt','parse'), 'AB'], ['parse','match', hop('parse','match'), 'AB'],
+  [ 'match','goal', [R('match'), [1062,100], [1062,304], [202,304], [202,322]], 'A', 0, ['known place', 1066, 200]],
+  [ 'match','ping', [B('match'), [965,155], [190,155], T('ping')], 'B', 0, ['unknown place', 780, 152]],
+  [ 'ping','yoloe',  hop('ping','yoloe'),   'B'], ['yoloe','depth', hop('yoloe','depth'), 'B'],
+  [ 'depth','cluster', hop('depth','cluster'), 'B'], ['cluster','verify', hop('cluster','verify'), 'B'],
+  [ 'verify','stand', hop('verify','stand'), 'B'],
+  [ 'cluster','explore', [B('cluster'), T('explore')], 'B', 0, ['no', 660, 232]],
+  [ 'explore','yoloe', [L('explore'), [345,260], B('yoloe')], 'B'],
+  [ 'stand','goal', [B('stand'), [965,292], [178,292], [178,322]], 'B', 0, ['goal', 900, 288]],
+  [ 'goal','bt', hop('goal','bt'), 'AB'], ['bt','plan', hop('bt','plan'), 'AB'], ['plan','ctrl', hop('plan','ctrl'), 'AB'],
+  [ 'ctrl','smooth', hop('ctrl','smooth'), 'AB'], ['smooth','mon', hop('smooth','mon'), 'AB', 1],
+  [ 'mon','ard', [R('mon'), [1095,345], [1095,545], R('ard')], 'AB', 1, ['cmd_vel', 1099, 450]],
+  [ 'map','amcl', hop('map','amcl'), 'A'],
+  [ 'amcl','plan', [T('amcl'), B('plan')], 'A', 0, ['pose', 504, 413]],
+  [ 'slam','ctrl', [T('slam'), B('ctrl')], 'B', 0, ['pose + map', 659, 413]],
+  [ 'cost','ctrl', [T('cost'), [965,396], [700,396], B('ctrl',45)], 'AB'],
+  [ 'cost','plan', [T('cost'), [965,396], [530,396], B('plan',30)], 'AB'],
+  [ 'slam','explore', [R('slam'), [732,445], [732,260], R('explore')], 'B', 1, ['live /map', 736, 420]],
+  [ 'lidar','prism', [[190,568], [190,592], [500,592], B('prism')], 'AB'],
+  [ 'cams','prism', hop('cams','prism'), 'AB'],
+  [ 'prism','amcl', [T('prism'), B('amcl')], 'A', 0, ['/scan_fused', 504, 480]],
+  [ 'prism','slam', [T('prism'), [500,496], [620,496], B('slam',-35)], 'B'],
+  [ 'prism','cost', [T('prism'), [500,484], [965,484], B('cost')], 'AB'],
+  [ 'zupt','slam', [T('zupt'), [810,509], [675,509], B('slam',20)], 'B'],
+  [ 'zupt','amcl', [T('zupt'), [810,509], [555,509], B('amcl',55)], 'A'],
+  [ 'ard','zupt', [L('ard'), R('zupt')], 'AB'],
+];
+
+// Click-panel content. n.d (above) is the one-line summary; each entry here adds
+// used (what software/hardware/parameters), how (steps), io, and notes (limits, safety, history).
+const DETAILS = {
+  mic: { used: ['arecord (ALSA), default laptop microphone', '16 kHz mono, read in 30 ms chunks'],
+    how: ['arecord streams raw audio all the time.', 'The node reads it in 30 ms chunks and hands each chunk to the energy gate.', 'Typed text on /voice/transcript skips the microphone and goes straight to the parser. Every Gazebo test used that path.'],
+    io: ['sound in the room', 'audio chunks'],
+    notes: ['The microphone path has never been run.', 'A laptop mic on a moving chair will hear motor and room noise. A headset or close-talk mic may be needed.', 'No speech output: the chair has no speaker, replies are printed and published on /voice/status.'] },
+  gate: { used: ['Energy gate inside voice_nav.py', 'Threshold: 3x the running background level, floor 0.01'],
+    how: ['Measures the loudness of each 30 ms chunk.', 'Compares it with a running estimate of the background.', 'Louder than 3x background: speech has started, go to Record. Otherwise go back to listening.'],
+    io: ['audio chunks', 'speech start signal'],
+    notes: ['No wake word. Only "go to ..." and "stop" phrases do anything, so ordinary talk is ignored later by the parser.', 'Basic by design. If it misses words or reacts to noise, tune the 3x and 0.01. Silero VAD or openWakeWord are the fallbacks.'] },
+  rec: { used: ['Same node, recording buffer', 'Stop rule: 1.2 s of silence, 9 s maximum'],
+    how: ['Keeps appending chunks once speech started.', 'Stops after 1.2 s of quiet, or at 9 s in any case.', 'Sends the finished clip to faster-whisper.'],
+    io: ['audio chunks', 'one audio clip per utterance'],
+    notes: ['A pause in the middle of a sentence can split it ("take me to the" / "kitchen"). The parser accepts a bare place name for that reason.'] },
+  stt: { used: ['faster-whisper base.en, int8, on the CPU', 'Prompt hint such as "go to the bedroom, kitchen, living room. stop."', 'Built-in Silero VAD trims silence'],
+    how: ['Decodes the clip to text.', 'The hint steers spelling of place names.', 'The transcript goes to the parser, the same way typed text does.'],
+    io: ['audio clip', 'transcript text'],
+    notes: ['CPU on purpose: it leaves the 6 GB RTX 4050 free for YOLOE and Qwen3-VL.', 'Options if accuracy is poor: small.en, or CUDA on the Jetson later.'] },
+  parse: { used: ['Two regular expressions in voice_nav.py'],
+    how: ['1. If the text contains "stop", "halt" or "cancel" anywhere, cancel the Nav2 goal and print "Stopping." This is checked first and has its own code path.', '2. If it matches "go / take me / drive to X", extract X.', '3. A bare short place name also counts.', '4. Anything else is ordinary conversation and is ignored.'],
+    io: ['transcript text', 'stop action, or a place phrase X'],
+    notes: ['Safety: "stop" never goes through the place matcher and works at any phase, including the 2 s wait and the VLM search (checked at least every 0.5 s).'] },
+  match: { used: ['rapidfuzz fuzzy match, score at least 85 (not a neural model)', 'src/wheelchair_description/config/locations.yaml: bedroom, kitchen, living_room, each with x, y, yaw in the map frame'],
+    how: ['Compare X with the saved place names. 85 or more picks a place.', 'Already driving: print "I am already moving. Say stop first."', 'Otherwise print "Going to the X. Say stop to cancel." and wait 2 s (stop still works).', 'Send one NavigateToPose goal with the saved pose.', 'On success, spin to the saved heading if more than 0.3 rad off, then print "Arrived at the X."', 'On failure print "I could not reach the X. I may be stuck. Please help me."', 'No match: voice-only mode prints "I don\'t know X. I know bedroom, kitchen, ...". With object_nav.py (vlm-objnav branch) the on_unknown hook starts the VLM search instead.'],
+    io: ['place phrase X', 'NavigateToPose goal, or an "unknown place" handoff to the VLM'],
+    notes: ['Closed vocabulary: free text never becomes coordinates. The chair can only go to saved places.', 'Nav2 ignores goal heading (yaw_goal_tolerance 6.28), so the node does the final turn with Nav2\'s Spin. Spin can refuse next to furniture ("Collision Ahead"); the chair then keeps its arrival heading.', 'Places need about 1.3 m clearance from furniture or the goal fails with "Start occupied".'] },
+
+  ping: { used: ['llama.cpp llama-server on port 8091, started by objnav_vlm_server.sh', 'Model: Qwen3-VL-2B-Instruct'],
+    how: ['Before any search, call the server /health.', 'No answer: print that the camera check is not running and do not drive.', 'Answer: go on to set the detector target and announce the search.'],
+    io: ['unknown place word', 'go / no-go for the search'],
+    notes: ['The chair never drives to an object that nothing can verify.', 'Code lives on the vlm-objnav branch, not on voice-sim.'] },
+  yoloe: { used: ['YOLOE yoloe-26s-seg.pt on the GPU (PyTorch)', 'The spoken word via set_classes(["sofa"])', 'Front, left and right RGB-D cameras, every 0.5 s'],
+    how: ['YOLOE is an open-vocabulary detector. Setting its only class to the spoken word means any object name works with no training.', 'While the chair drives or turns, the node runs it on all three camera images every 0.5 s.', 'Each detection is a box in the image, passed on with the aligned depth image.'],
+    io: ['3 camera images + target word', 'boxes in image space'],
+    notes: ['On the real chair the side cameras are depth only today (enable_color: false in multi_camera.launch.py). This step needs colour, which costs USB bandwidth.', 'The detector only finds candidates. It is not trusted on its own.'] },
+  depth: { used: ['Aligned depth image from each RealSense', 'TF tree (camera frame to map frame)', 'objnav_geometry.py'],
+    how: ['Take the depth under the box to get a 3D point in the camera frame.', 'Convert it to the map frame through TF.', 'Depth outside 0.3 to 5 m is thrown away because stereo depth gets noisy at range.'],
+    io: ['box + depth', 'object position (x, y) in the map'],
+    notes: ['Accuracy depends on localisation. In the 2026-10-04 sim run, AMCL drift made object positions unreliable until the odometry fix.', 'Objects farther than 4 m are approached first and looked at again from closer.'] },
+  cluster: { used: ['Clustering in object_nav.py, radius 0.5 m'],
+    how: ['One detection is never enough.', 'A hit counts only when a second hit lands within 0.5 m of it from a different viewpoint: another camera, at least 0.3 m of travel, or at least 0.3 rad of turn.', 'No pair yet: keep exploring. Pair found: send it to the VLM.'],
+    io: ['map-frame detections', 'one confirmed-by-two-views candidate'],
+    notes: ['Removes one-frame false positives cheaply, before the slower VLM is called.'] },
+  verify: { used: ['Qwen3-VL-2B-Instruct, GGUF Q4_K_M, served by llama.cpp on the GPU', 'HTTP call to port 8091 from objnav_models.py'],
+    how: ['Send the full camera frame with the candidate box drawn in red and ask "Is it a sofa? yes or no".', 'Yes: go to the standoff goal.', 'No: ignore that spot for the rest of the command and go explore.', 'Any server error counts as "no".'],
+    io: ['frame + red box + question', 'yes / no'],
+    notes: ['History: the first prototype (Qwen2.5-VL 3B, crop only) accepted a wrong object about 8 m from the real refrigerator. Showing the full frame is the fix, and the 2B model is used only as a yes/no check.', 'Speed: with the image encoder on the GPU a frame took 0.3 to 0.6 s after a 22 s first call. On CPU through Ollama it took about 60 s.', 'The VLM only proposes and confirms a target. It never drives.'] },
+  stand: { used: ['objnav_geometry.py', 'Global costmap (to find a free cell)'],
+    how: ['Pick a free cell 1.5, then 1.9, then 2.4 m short of the object.', 'If blocked, try wider angles all the way round the object.', 'Announce the target, wait 2 s, send NavigateToPose, then spin to face the object.', 'Print "Arrived at the sofa."'],
+    io: ['verified object position', 'NavigateToPose goal'],
+    notes: ['Standing short keeps the chair out of the object and inside the inflated costmap rules.', 'The sim object search has not been completed end to end in a recorded run. Treat this part as work in progress.'] },
+  explore: { used: ['Live /map from slam_toolbox', 'objnav_frontiers.py', 'MobileCLIP-S2 through open_clip (objnav_value.py), step B'],
+    how: ['A frontier is a known free cell next to unknown space, at least 0.6 m long.', 'Step A picks the frontier with the best size / (distance + 1).', 'Step B also weighs how much the area looks like the target: MobileCLIP similarity of camera views to "a photo of a sofa".', 'Frontiers already tried are skipped. A rejected detection does not mark a frontier as tried.', 'Drive there with NavigateToPose while the cameras keep looking, then loop back to detection.', 'Right after start the map has no frontier: spin in 90 degree steps and creep 0.6 m ahead until one appears.'],
+    io: ['live map + camera views', 'a frontier goal'],
+    notes: ['Gives up after 300 s or 20 frontier trips and says "I can\'t find the sofa".', 'The MobileCLIP value map is work in progress.'] },
+
+  goal: { used: ['nav2_msgs/action/NavigateToPose, pose in the map frame'],
+    how: ['voice_nav.py (saved place) or object_nav.py (standoff cell) sends one goal.', 'Nav2 runs it; the node can only cancel it.', 'go_to_location.py and RViz 2D Goal Pose use the same action.'],
+    io: ['x, y, yaw in the map frame', 'a running Nav2 task, then SUCCEEDED or FAILED'],
+    notes: ['Nav2 is the only thing that moves the wheels. The voice and VLM code never publish a velocity command.', 'One goal at a time. A new destination during a trip is refused until "stop".'] },
+  bt: { used: ['Nav2 bt_navigator with wheelchair_robust_nav_v5.xml', 'Parameters: nav2_params_3cam_v30.yaml (both are now the launch defaults)'],
+    how: ['Replan the path at 0.5 Hz.', 'When stuck, try once each per cycle, forward first: clear costmaps, wait 3 s, spin 60 deg left, spin 60 deg right, back up 30 cm at 0.10 m/s.', 'Last resort: follow the path in reverse for at most 4 s at 0.10 m/s.', 'If that also fails the tree gives up after about 17 s and the voice node says it may be stuck.'],
+    io: ['goal', 'plan requests to the planner, goal result to the voice node'],
+    notes: ['v29 allowed reversing and used a planner that ignores heading, so the chair drove backwards along paths that started behind it. v30 plus v5 fixed that: in the sim, kitchen, bedroom, kitchen succeeded with no negative linear.x on /cmd_vel.'] },
+  plan: { used: ['SmacPlannerHybrid (Hybrid-A*)', 'motion_model_for_search: DUBIN, minimum turning radius 0.40 m', 'Footprint 0.9 x 0.7 m'],
+    how: ['Start from the chair\'s real heading.', 'Search forward-only curves, checking the footprint along the whole path against the global costmap.', 'A goal behind the chair becomes a forward curve that turns the chair around.'],
+    io: ['goal + pose + global costmap', 'path'],
+    notes: ['The old SmacPlanner2D treated the chair as a point with no heading, which is why it produced paths starting straight backwards.'] },
+  ctrl: { used: ['Regulated Pure Pursuit', '0.25 m/s, allow_reversing: false', 'yaw_goal_tolerance: 6.28 (ignore goal heading)'],
+    how: ['Follow the path forward at up to 0.25 m/s.', 'If the path points more than 45 degrees away from the chair\'s heading, rotate in place first, then follow.', 'Stop if the footprint would hit something in the next second.', 'Stuck: the behavior tree runs its recoveries.'],
+    io: ['path + local costmap + pose', 'velocity command'],
+    notes: ['No reversing in normal driving. The only reverse moves are the last two recoveries, at 0.10 m/s.'] },
+  smooth: { used: ['Nav2 velocity_smoother', 'Limits 0.25 m/s and 0.50 rad/s'],
+    how: ['Takes the controller command.', 'Limits acceleration so starts and stops are gentle for a seated passenger.', 'Passes the result on (through the collision monitor if it is on) to the wheels.'],
+    io: ['velocity command', 'smoothed velocity command'],
+    notes: ['Real chair: command goes to the Arduino. Simulation: to Gazebo\'s diff drive.'] },
+  mon: { used: ['Nav2 collision_monitor, parameter use_collision_monitor'],
+    how: ['When enabled it sits after the smoother and can stop or slow the command if something is too close.', 'When disabled (the default) the smoothed command goes straight to the wheels.'],
+    io: ['smoothed command', 'checked command'],
+    notes: ['Off by default in run_nav and in the sim. Decide whether voice trials on the chair run with use_collision_monitor:=true.'] },
+
+  map: { used: ['run_slam (wheelchair_slam_mapping.launch.py) with slam_toolbox on the fused scan', 'nav2 map_server', 'Output: maps/session_YYYYMMDD_HHMMSS/ with .pgm, .yaml, pose graph and a rosbag'],
+    how: ['Keep the chair still for 3 s so the IMU measures gyro bias.', 'Wait about 42 s for the session manager that saves the map.', 'Drive every area slowly by joystick and come back to the start so loop closure fixes drift.', 'Ctrl+C saves everything.', 'Check the PGM: thin straight walls, no ghost walls. If bad, map again.', 'Then drive to each spot, read the pose from /amcl_pose, and save it by hand in locations.yaml (yaw = 2 * atan2(z, w)).'],
+    io: ['joystick drive + scan', '.pgm/.yaml map and named places'],
+    notes: ['This is the one time SLAM is used for the saved-place mode. After this, navigation uses AMCL on the saved map.', 'Per-map places files and save_location.py are planned, not built.'] },
+  amcl: { used: ['Nav2 AMCL (adaptive Monte Carlo localisation, a particle filter)', 'Inputs: map from map_server, /scan_fused, ZUPT odometry'],
+    how: ['Spread particles over the saved map.', 'Weight them by how well the fused scan matches the walls.', 'Resample, and publish the map to odom transform.', 'Nav2 then knows where the chair is on the map the named places were saved on.'],
+    io: ['saved map + /scan_fused + odom', 'map -> odom transform, /amcl_pose'],
+    notes: ['Needs a start pose: put the chair at the map origin or set /initialpose (RViz 2D Pose Estimate).', 'Simulation reads the raw /scan, because PRISM-Nav fusion does not run there.', 'Planned: refuse a goal while AMCL covariance is above a threshold.', 'Why AMCL here: named places only mean something on one fixed map.'] },
+  slam: { used: ['slam_toolbox (online SLAM) on the fused scan', 'Publishes /map and the map to odom transform'],
+    how: ['Builds the map and a pose graph while the chair moves.', 'Frontier exploration reads the live /map.', 'Nav2 plans on the same growing map.'],
+    io: ['/scan_fused + odom', 'live /map, map -> odom'],
+    notes: ['Used because the object may be in a building the chair has never mapped. No saved map, so no AMCL.', 'This is the same SLAM that run_slam uses to make the saved map in the other mode.', 'On the vlm-objnav branch: "Nav2 without AMCL for the chair" (commit a5f01fd). Work in progress, not run end to end.'] },
+  cost: { used: ['Nav2 global and local costmaps', 'Chair footprint 0.9 x 0.7 m, inflation layer (0.65 m in the sim)'],
+    how: ['Mark obstacles from /scan_fused, which includes tables and shelves above the LiDAR plane.', 'Inflate them by the chair size.', 'The global costmap (with the map) serves the planner; the local one serves the controller.'],
+    io: ['/scan_fused + map', 'obstacle grids for planner and controller'],
+    notes: ['A goal or the chair inside the inflated zone fails with "Start occupied". Keep saved places about 1.3 m from furniture.'] },
+
+  lidar: { used: ['RPLidar S3, /dev/rplidar (alias for /dev/ttyUSB0)', 'laser filter to scan_filtered'],
+    how: ['Publishes a 2D range scan.', 'The laser filter cleans it.', 'The cleaned scan is one input to PRISM-Nav fusion.'],
+    io: ['environment', '/scan, scan_filtered'],
+    notes: ['A 2D scan alone cannot see tables above its plane. In the thesis trials the LiDAR-only baseline had 20 collisions in 40 runs.', 'In the sim the lidar is lifted 0.25 m so pitch does not make the beams hit the floor.'] },
+  cams: { used: ['Front RealSense D455, above head height, forward (serial 337122300107, the only IMU)', 'Left D455 and right D435i at armrest height, +90 and -90 degrees', 'Opened by serial number on USB 3 ports'],
+    how: ['The occupant\'s body blocks most sensor positions. Only these three sightlines clear it.', 'Together they give up to 259 degrees of height-aware coverage.', 'Depth goes to PRISM-Nav; colour images go to YOLOE and Qwen3-VL in the object search.'],
+    io: ['environment', 'depth images, colour images, IMU'],
+    notes: ['Side cameras are depth only on the chair today. The VLM search needs colour on them.', 'In the sim the three cameras publish on the RealSense topic names.'] },
+  prism: { used: ['scan_fusion_v9 (PRISM-Nav, Pre-SLAM Integrated Scan Merging for Navigation)', 'Height window 0.10 to 1.80 m, at least 2 camera points per bin'],
+    how: ['Height-filter each camera\'s depth.', 'Project it into the LiDAR\'s angular bins.', 'Per bin take the minimum: F_k = min(L_k, min_i O_i,k).', 'Publish the fused /scan_fused.'],
+    io: ['scan_filtered + 3 depth cameras', '/scan_fused'],
+    notes: ['Merging before SLAM means the saved map, costmaps and AMCL all work on one geometry.', 'Thesis trials: 40 of 40 runs without collision and 33 of 40 goals, against 20 collisions in 40 runs for LiDAR only.', 'Not running in the sim, which uses the raw /scan.'] },
+  joy: { used: ['Hand joystick and hardware emergency stop'],
+    how: ['Not part of the Nav2 chain.', 'Works whether or not any navigation software is running.'],
+    io: ['person', 'direct drive / power cut'],
+    notes: ['Run the first real-chair trips with an empty chair, in open space, with a hand on the emergency stop.'] },
+  zupt: { used: ['zupt_node during navigation, six-state robust_ekf_zupt_node during mapping', 'Wheel encoders + camera IMU'],
+    how: ['A stationarity detector requires encoders and accelerometer to agree the chair is still.', 'When it is still, clamp the velocity states and recalibrate gyro bias.', 'Publish odom to base_link.'],
+    io: ['encoders + IMU', 'odom -> base_link'],
+    notes: ['Bounds the heading drift that would build up between trips. SLAM, AMCL and the controller all depend on this transform.', 'The simulation uses a robot_localization EKF (wheel forward speed + IMU heading) instead, with a 0.32 m axle-to-base_link shift. Whether the chair needs the same shift is unchecked.'] },
+  ard: { used: ['Arduino Mega, /dev/ttyACM0 (alias /dev/wheelchair_arduino)', 'Simulation: gz diff_drive plugin'],
+    how: ['Takes the smoothed velocity command and drives the two wheel motors differentially.', 'Reads the wheel encoders and sends them back for odometry.'],
+    io: ['velocity command', 'wheel motion + encoder counts'],
+    notes: ['This is the only place a command reaches the wheels.'] },
+};
+const STORY = {
+  A: ['You speak. The microphone, energy gate and recorder cut out one utterance.', 'faster-whisper turns it into text. Typed text can replace this step.', 'The parser checks for "stop" first, then for "go to X".', 'rapidfuzz matches X to a saved place. The chair prints "Going to the kitchen" and waits 2 s.', 'One NavigateToPose goal goes to Nav2.', 'The behavior tree replans at 0.5 Hz. SmacPlannerHybrid plans a forward-only path, Pure Pursuit follows it, the smoother limits it, and the Arduino drives.', 'AMCL keeps the chair located on the saved map, using the fused scan and ZUPT odometry. The map was built once earlier with slam_toolbox.', 'On arrival the chair spins to the saved heading and prints "Arrived at the kitchen."'],
+  B: ['The same voice front end runs. The place name does not match, so the VLM search starts.', 'The chair checks the VLM server first, then sets YOLOE\'s only class to the spoken word.', 'Three cameras look every 0.5 s. Boxes plus depth become map points. Two views within 0.5 m make a candidate.', 'Qwen3-VL-2B looks at the full frame with the box in red and answers yes or no.', 'No: the chair picks a frontier on the live slam_toolbox map (MobileCLIP ranks them), drives there while still looking, and repeats.', 'Yes: it picks a free cell 1.5 to 2.4 m short of the object, announces, waits 2 s, then sends NavigateToPose.', 'The Nav2 chain is the same as in the other mode, but localisation comes from slam_toolbox, not AMCL.', 'It gives up after 300 s or 20 frontier trips. "Stop" works at every step.'],
+};
+
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('svg');
+const mk = (tag, attrs, parent = svg) => {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  parent.appendChild(e);
+  return e;
+};
+LANES.forEach(l => {
+  mk('rect', { class: 'lane', x: 100, y: l.y0, width: 1075, height: l.y1 - l.y0, rx: 6 });
+  mk('text', { class: 'lbl', x: 14, y: l.y0 + 18 }).textContent = l.name;
+});
+const edgeEls = E.map(([a, b, pts, m, dash, lab]) => {
+  const p = mk('path', { class: 'edge' + (dash ? ' dash' : ''), d: 'M' + pts.map(q => q.join(',')).join(' L') });
+  const lb = lab && Object.assign(mk('text', { class: 'elbl', x: lab[1], y: lab[2] }), { textContent: lab[0] });
+  return { p, lb, m, a, b };
+});
+const pktEls = edgeEls.map(() => mk('circle', { class: 'pkt', r: 2.6, cx: -10, cy: -10 }));
+const nodeEls = {};
+for (const id in node) {
+  const n = node[id];
+  const g = mk('g', { class: 'node' });
+  mk('rect', { x: n.x - W / 2, y: n.y - H / 2, width: W, height: H, rx: 6 }, g);
+  mk('circle', { cx: n.x - W / 2 + 9, cy: n.y - H / 2 + 9, r: 3.2, fill: `var(--${n.st})` }, g);
+  mk('text', { class: 't', x: n.x, y: n.y - 2 }, g).textContent = n.t;
+  mk('text', { class: 's', x: n.x, y: n.y + 12 }, g).textContent = n.s;
+  g.addEventListener('click', () => select(id));
+  nodeEls[id] = g;
+}
+
+const STATUS = { sim: 'tested in Gazebo', wip: 'work in progress', chair: 'chair pipeline, not re-tested here', untested: 'never run' };
+let mode = 'A', sel = null;
+const out = document.getElementById('out');
+const panel = document.getElementById('panel');
+function summary() {
+  const nn = Object.values(node).filter(n => n.m.includes(mode)).length;
+  const ee = E.filter(e => e[3].includes(mode)).length;
+  return mode === 'A'
+    ? `<b>Saved place</b>: map built once by SLAM, pose from <b>AMCL</b> on a saved map. ${nn} boxes, ${ee} links.`
+    : `<b>Object search</b>: map built live by <b>slam_toolbox</b>, no AMCL. ${nn} boxes, ${ee} links.`;
+}
+function render() {
+  if (sel && !node[sel].m.includes(mode)) sel = null;
+  document.body.classList.toggle('modeB', mode === 'B');
+  document.getElementById('mA').classList.toggle('on', mode === 'A');
+  document.getElementById('mB').classList.toggle('on', mode === 'B');
+  for (const id in node) {
+    nodeEls[id].classList.toggle('off', !node[id].m.includes(mode));
+    nodeEls[id].classList.toggle('sel', id === sel);
+  }
+  edgeEls.forEach(e => {
+    const on = e.m.includes(mode);
+    e.p.classList.toggle('off', !on); e.p.classList.toggle('on', on);
+    e.lb && e.lb.classList.toggle('off', !on);
+  });
+  out.innerHTML = summary();
+  const li = a => a.map(x => `<li>${esc(x)}</li>`).join('');
+  if (sel) {
+    const n = node[sel], d = DETAILS[sel];
+    panel.innerHTML = `<button class="back" id="back">Back to walkthrough</button>
+      <h2>${esc(n.t)}<span class="chip" style="color:var(--${n.st})">${STATUS[n.st]}</span></h2>
+      <p class="sum">${esc(n.d)}</p>
+      <div class="cols">
+        <div><h3>What is used</h3><ul>${li(d.used)}</ul></div>
+        <div><h3>How it works</h3><ol>${li(d.how)}</ol></div>
+        <div><h3>Limits, safety, history</h3><ul>${li(d.notes)}</ul></div>
+      </div>
+      <p class="io"><b>In:</b> ${esc(d.io[0])} &nbsp;&rarr;&nbsp; <b>Out:</b> ${esc(d.io[1])}</p>`;
+    document.getElementById('back').onclick = () => { sel = null; render(); };
+  } else {
+    panel.innerHTML = `<h2>${mode === 'A' ? 'Walkthrough: saved place, AMCL' : 'Walkthrough: object search, VLM + slam_toolbox'}</h2>
+      <p class="sum">Click any box in the diagram for details on that part.</p><ol>${li(STORY[mode])}</ol>`;
+  }
+}
+const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+function select(id) { if (node[id].m.includes(mode)) { sel = id; render(); } }
+document.getElementById('mA').onclick = () => { mode = 'A'; render(); };
+document.getElementById('mB').onclick = () => { mode = 'B'; render(); };
+render();
+
+const lens = edgeEls.map(e => e.p.getTotalLength());
+if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  const ease = t => t * t * (3 - 2 * t);
+  (function tick(ms) {
+    edgeEls.forEach((e, i) => {
+      const k = e.m.includes(mode);
+      const pk = pktEls[i];
+      if (!k) { pk.setAttribute('cx', -10); return; }
+      const t = ease(((ms / 3200) + i * 0.173) % 1);
+      const q = e.p.getPointAtLength(t * lens[i]);
+      pk.setAttribute('cx', q.x); pk.setAttribute('cy', q.y);
+    });
+    requestAnimationFrame(tick);
+  })(0);
+}
+</script>
+</body>
+</html>

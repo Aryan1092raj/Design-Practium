@@ -132,8 +132,8 @@ def generate_launch_description():
                 'unite_imu_method': unite_imu_method,
                 'align_depth.enable': 'true',
                 'enable_sync': 'true',
-                'rgb_camera.profile': '640x360x30',
-                'depth_module.profile': '640x360x30',
+                'rgb_camera.color_profile': '640x360x30',
+                'depth_module.depth_profile': '640x360x30',
                 'enable_pointcloud': 'true',
                 'pointcloud.allow_no_texture_points': 'true',
                 'use_sim_time': use_sim_time

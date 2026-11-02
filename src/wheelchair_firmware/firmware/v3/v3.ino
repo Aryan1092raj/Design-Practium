@@ -30,6 +30,7 @@ int ch1, ch2;
 bool ppm_active = false;
 unsigned long last_ppm_time = 0;
 const unsigned long PPM_TIMEOUT = 500;
+const int PPM_DEADBAND = 80;  // us either side of 1500 treated as stick centered (was 40)
 
 // ================== PIN DEFINITIONS ==================
 const int encoderPin1R = 18;
@@ -181,15 +182,22 @@ void processPPMInput() {
   ch1 = ppmValues[0];
   ch2 = ppmValues[1];
 
-  if (ch1 > 900 && ch1 < 2100 && ch2 > 900 && ch2 < 2100) {
+  // A receiver that stops sending edges leaves the last ppmValues in place, so
+  // require a recent edge as well as in-range values.
+  noInterrupts();
+  unsigned long last_edge_us = lastMicros;
+  interrupts();
+  bool ppm_fresh = (micros() - last_edge_us) < PPM_TIMEOUT * 1000UL;
+
+  if (ppm_fresh && ch1 > 900 && ch1 < 2100 && ch2 > 900 && ch2 < 2100) {
     ppm_active = true;
     last_ppm_time = current_time;
     current_mode = PPM_MODE;
 
     int ch1_filtered = ch1;
     int ch2_filtered = ch2;
-    if (ch1 > 1460 && ch1 < 1540) ch1_filtered = 1500;
-    if (ch2 > 1460 && ch2 < 1540) ch2_filtered = 1500;
+    if (abs(ch1 - 1500) <= PPM_DEADBAND) ch1_filtered = 1500;
+    if (abs(ch2 - 1500) <= PPM_DEADBAND) ch2_filtered = 1500;
     ch1_filtered = constrain(ch1_filtered, 1000, 2000);
     ch2_filtered = constrain(ch2_filtered, 1000, 2000);
 

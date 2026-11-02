@@ -160,7 +160,7 @@ def generate_launch_description():
             # Now matches side cameras: 424x240@6Hz depth-only. IMU unaffected (separate stream).
             'enable_color': 'false',
             'align_depth.enable': 'false',
-            'depth_module.profile': '424x240x6',
+            'depth_module.depth_profile': '424x240x6',
             # Point cloud for scan_fusion + STVL
             'pointcloud.enable': 'true',
             'pointcloud.stream_filter': '0',        # RS2_STREAM_DEPTH (was 2/COLOR — color is now disabled)

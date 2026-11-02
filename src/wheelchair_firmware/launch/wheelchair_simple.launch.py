@@ -89,7 +89,7 @@ def generate_launch_description():
             'unite_imu_method': '2',
             'align_depth.enable': 'true',
             'enable_sync': 'true',
-            'rgb_camera.profile': '640x360x30',
+            'rgb_camera.color_profile': '640x360x30',
             'use_sim_time': use_sim_time
         }.items(),
         condition=IfCondition(use_camera)

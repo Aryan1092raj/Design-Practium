@@ -14,6 +14,7 @@ int ch1, ch2;
 bool ppm_active = false;
 unsigned long last_ppm_time = 0;
 const unsigned long PPM_TIMEOUT = 500; // 500ms timeout for PPM signal
+const int PPM_DEADBAND = 150;          // us either side of 1500 treated as stick centered (was 40, then 80)
 
 // Encoder pins
 int encoderPin1R = 18;
@@ -173,8 +174,15 @@ void processPPMInput() {
   ch1 = ppmValues[0]; // Channel 1 - Angular (Rotation)
   ch2 = ppmValues[1]; // Channel 2 - Throttle (Linear)
 
+  // A receiver that stops sending edges leaves the last ppmValues in place, so
+  // require a recent edge as well as in-range values.
+  noInterrupts();
+  unsigned long last_edge_us = lastMicros;
+  interrupts();
+  bool ppm_fresh = (micros() - last_edge_us) < PPM_TIMEOUT * 1000UL;
+
   // Check for valid PPM signal (typical range 1000-2000)
-  if (ch1 > 900 && ch1 < 2100 && ch2 > 900 && ch2 < 2100) {
+  if (ppm_fresh && ch1 > 900 && ch1 < 2100 && ch2 > 900 && ch2 < 2100) {
     ppm_active = true;
     last_ppm_time = current_time;
     current_mode = PPM_MODE;
@@ -183,8 +191,18 @@ void processPPMInput() {
     int ch1_filtered = ch1;
     int ch2_filtered = ch2;
 
-    if (ch1 > 1460 && ch1 < 1540) ch1_filtered = 1500;
-    if (ch2 > 1460 && ch2 < 1540) ch2_filtered = 1500;
+    // Raw stick pulses twice a second so a drifting center shows up in the serial log.
+    static unsigned long last_ch_print = 0;
+    if (current_time - last_ch_print >= 500) {
+      last_ch_print = current_time;
+      Serial.print("[CH] ");
+      Serial.print(ch1);
+      Serial.print(",");
+      Serial.println(ch2);
+    }
+
+    if (abs(ch1 - 1500) <= PPM_DEADBAND) ch1_filtered = 1500;
+    if (abs(ch2 - 1500) <= PPM_DEADBAND) ch2_filtered = 1500;
 
     // Constrain inputs to valid range for safety
     ch1_filtered = constrain(ch1_filtered, 1000, 2000);

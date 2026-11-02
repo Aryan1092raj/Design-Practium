@@ -413,13 +413,13 @@ def generate_launch_description():
             'enable_accel': 'true',
             'unite_imu_method': '2',
             'enable_color': 'true' if ds_mode else 'false',
-            'depth_module.profile': '424x240x6',
+            'depth_module.depth_profile': '424x240x6',
             'pointcloud.enable': 'true',
             'pointcloud.stream_filter': '0',
             'pointcloud.stream_index_filter': '0',
         }
         if ds_mode:
-            front_args['rgb_camera.profile'] = '424x240x6'
+            front_args['rgb_camera.color_profile'] = '424x240x6'
 
         left_args = {
             'camera_name': 'mapping_camera',
@@ -429,13 +429,13 @@ def generate_launch_description():
             'enable_gyro': 'false',
             'enable_accel': 'false',
             'enable_color': 'true' if ds_mode else 'false',
-            'depth_module.profile': '424x240x6',
+            'depth_module.depth_profile': '424x240x6',
             'pointcloud.enable': 'true',
             'pointcloud.stream_filter': '0',
             'pointcloud.stream_index_filter': '0',
         }
         if ds_mode:
-            left_args['rgb_camera.profile'] = '424x240x6'
+            left_args['rgb_camera.color_profile'] = '424x240x6'
 
         right_args = {
             'camera_name': 'right_camera',
@@ -445,13 +445,13 @@ def generate_launch_description():
             'enable_gyro': 'false',
             'enable_accel': 'false',
             'enable_color': 'true' if ds_mode else 'false',
-            'depth_module.profile': '424x240x6',
+            'depth_module.depth_profile': '424x240x6',
             'pointcloud.enable': 'true',
             'pointcloud.stream_filter': '0',
             'pointcloud.stream_index_filter': '0',
         }
         if ds_mode:
-            right_args['rgb_camera.profile'] = '424x240x6'
+            right_args['rgb_camera.color_profile'] = '424x240x6'
 
         mode_label = '+ RGB capture' if ds_mode else 'depth only'
         return [

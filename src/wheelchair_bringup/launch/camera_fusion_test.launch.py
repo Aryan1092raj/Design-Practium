@@ -134,7 +134,7 @@ def generate_launch_description():
                     'enable_accel': 'true',
                     'unite_imu_method': '2',
                     'enable_color': 'false',  # No color - save bandwidth
-                    'depth_module.profile': '424x240x6',  # LOW resolution + framerate
+                    'depth_module.depth_profile': '424x240x6',  # LOW resolution + framerate
                     'pointcloud.enable': 'true',
                     'pointcloud.stream_filter': '0',  # Depth only
                     'pointcloud.stream_index_filter': '0',
@@ -158,7 +158,7 @@ def generate_launch_description():
                     'enable_gyro': 'false',
                     'enable_accel': 'false',
                     'enable_color': 'false',
-                    'depth_module.profile': '424x240x6',
+                    'depth_module.depth_profile': '424x240x6',
                     'pointcloud.enable': 'true',
                     'pointcloud.stream_filter': '0',
                     'pointcloud.stream_index_filter': '0',
@@ -182,7 +182,7 @@ def generate_launch_description():
                     'enable_gyro': 'false',
                     'enable_accel': 'false',
                     'enable_color': 'false',
-                    'depth_module.profile': '424x240x6',
+                    'depth_module.depth_profile': '424x240x6',
                     'pointcloud.enable': 'true',
                     'pointcloud.stream_filter': '0',
                     'pointcloud.stream_index_filter': '0',

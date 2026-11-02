@@ -260,8 +260,8 @@ def generate_launch_description():
             'enable_gyro': 'true', 'enable_accel': 'true',
             'unite_imu_method': '2',
             'enable_color': 'true',                # RGB for RTAB-Map visual features
-            'rgb_camera.profile': '424x240x6',
-            'depth_module.profile': '424x240x6',
+            'rgb_camera.color_profile': '424x240x6',
+            'depth_module.depth_profile': '424x240x6',
             'align_depth.enable': 'true',          # Align depth to color frame
             'pointcloud.enable': 'true',           # For scan_fusion
             'pointcloud.stream_filter': '0', 'pointcloud.stream_index_filter': '0',
@@ -271,8 +271,8 @@ def generate_launch_description():
             'serial_no': LEFT_SERIAL, 'publish_tf': 'false',
             'enable_gyro': 'false', 'enable_accel': 'false',
             'enable_color': 'true',
-            'rgb_camera.profile': '424x240x6',
-            'depth_module.profile': '424x240x6',
+            'rgb_camera.color_profile': '424x240x6',
+            'depth_module.depth_profile': '424x240x6',
             'align_depth.enable': 'true',
             'pointcloud.enable': 'true',
             'pointcloud.stream_filter': '0', 'pointcloud.stream_index_filter': '0',
@@ -282,8 +282,8 @@ def generate_launch_description():
             'serial_no': RIGHT_SERIAL, 'publish_tf': 'false',
             'enable_gyro': 'false', 'enable_accel': 'false',
             'enable_color': 'true',
-            'rgb_camera.profile': '424x240x6',
-            'depth_module.profile': '424x240x6',
+            'rgb_camera.color_profile': '424x240x6',
+            'depth_module.depth_profile': '424x240x6',
             'align_depth.enable': 'true',
             'pointcloud.enable': 'true',
             'pointcloud.stream_filter': '0', 'pointcloud.stream_index_filter': '0',
