@@ -1,0 +1,7 @@
+image: real_chair_indoor_2026-11-05.pgm
+mode: trinary
+resolution: 0.020
+origin: [-16.857, -20.618, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
