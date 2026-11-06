@@ -66,6 +66,7 @@ def generate_launch_description():
     slam = LaunchConfiguration("slam")
     slam_params_file = LaunchConfiguration("slam_params_file")
     nav2 = LaunchConfiguration("nav2")
+    nav2_slam = LaunchConfiguration("nav2_slam")
     use_collision_monitor = LaunchConfiguration("use_collision_monitor")
     map_file = LaunchConfiguration("map")
     nav2_params_file = LaunchConfiguration("nav2_params_file")
@@ -75,12 +76,18 @@ def generate_launch_description():
 
     # SLAM needs odom -> base_link (the EKF) plus the bridged /scan.
     slam_ready = PythonExpression([
-        "'", slam, "' == 'true' and '", ekf, "' == 'true' and '", nav2, "' != 'true'",
+        "'", slam, "' == 'true' and '", ekf, "' == 'true' and ('", nav2, "' != 'true' or '",
+        nav2_slam, "' == 'true')",
     ])
 
     # Nav2 localizes with AMCL on a saved map and drives to goals on its own.
     nav2_ready = PythonExpression([
         "'", nav2, "' == 'true' and '", ekf, "' == 'true' and '", bridge_lidar, "' == 'true'",
+    ])
+
+    # Same as nav2_ready, minus map_server + AMCL when slam_toolbox provides the map.
+    nav2_localize = PythonExpression([
+        "'", nav2_slam, "' != 'true' and ", nav2_ready,
     ])
 
     declare_world_name = DeclareLaunchArgument(
@@ -135,6 +142,11 @@ def generate_launch_description():
                     "behaviour trees) so the wheelchair drives to goals by itself. "
                     "Requires ekf:=true and bridge_lidar:=true, and takes precedence "
                     "over slam:= because both would publish map -> odom."
+    )
+    declare_nav2_slam = DeclareLaunchArgument(
+        "nav2_slam", default_value="false",
+        description="With nav2:=true and slam:=true, run Nav2 on the live slam_toolbox map "
+                    "instead of map_server + AMCL (slam_toolbox owns map -> odom)."
     )
     declare_map = DeclareLaunchArgument(
         "map", default_value="",
@@ -440,7 +452,7 @@ def generate_launch_description():
         name="map_server", output="screen",
         parameters=[nav2_params_file, nav2_sim_params, nav2_common,
                     {"yaml_filename": map_file}],
-        condition=IfCondition(nav2_ready),
+        condition=IfCondition(nav2_localize),
     )
     # The TwistStamped bridge is what actually drives the wheels: diff_drive runs
     # inside Gazebo and consumes /wc_control/cmd_vel. It reads /cmd_vel_safe when
@@ -462,13 +474,14 @@ def generate_launch_description():
         package="nav2_amcl", executable="amcl", name="amcl",
         namespace="", output="screen",
         parameters=[nav2_params_file, nav2_sim_params, nav2_common],
-        condition=IfCondition(nav2_ready),
+        condition=IfCondition(nav2_localize),
     )
     nav2_lifecycle_manager = Node(
         package="nav2_lifecycle_manager", executable="lifecycle_manager",
         name="nav2_lifecycle_manager", output="screen",
         parameters=[nav2_common, {"autostart": True, "node_names": PythonExpression([
-            "['map_server', 'amcl', 'controller_server', 'smoother_server', ",
+            "(['map_server', 'amcl'] if '", nav2_slam, "' != 'true' else []) + ",
+            "['controller_server', 'smoother_server', ",
             "'planner_server', 'behavior_server', 'bt_navigator', ",
             "'velocity_smoother', 'waypoint_follower'] + ",
             "(['collision_monitor'] if '", use_collision_monitor, "' == 'true' else [])",
@@ -511,6 +524,7 @@ def generate_launch_description():
         declare_slam,
         declare_slam_params,
         declare_nav2,
+        declare_nav2_slam,
         declare_map,
         declare_nav2_params_file,
         declare_bt_xml,

@@ -11,11 +11,13 @@ Runs inside .venv-voice, with Nav2 and the saved map already up:
 Text can also be injected for testing:
     ros2 topic pub --once /voice/transcript std_msgs/String "{data: 'go to the kitchen'}"
 """
+import json
 import math
 import re
 import subprocess
 import threading
 import time
+import urllib.request
 
 import numpy as np
 import rclpy
@@ -32,6 +34,8 @@ from tf2_ros import Buffer, TransformListener
 
 from go_to_location import load_locations
 
+SLM_MODEL = "qwen3:0.6b"
+SLM_URL = "http://127.0.0.1:11434/api/chat"
 STOP = re.compile(r"\b(stop|halt|cancel)\b")
 GO = re.compile(r"\b(?:go|take me|bring me|drive|move|head|navigate)\b.*?\b(?:to|towards?)\s+"
                 r"(?:the |a |an |my )?(?P<t>[a-z ]+)")
@@ -62,6 +66,34 @@ class VoiceNav(Node):
         self.get_logger().info(text)
         self.status.publish(String(data=text))
 
+    def slm_place(self, text, names):
+        """Ask the small language model (Ollama) which place the user wants.
+
+        Returns the place name, "none" when the text is not a go-to command, or None when
+        the SLM is unreachable so the caller falls back to the regex matcher.
+        """
+        body = {"model": SLM_MODEL, "stream": False, "think": False, "format": "json",
+                "keep_alive": "30m", "options": {"temperature": 0, "num_predict": 24},
+                "messages": [
+                    {"role": "system", "content":
+                     "A wheelchair voice command. Places: " + ", ".join(names.values()) + ". "
+                     'Reply JSON {"place": "<one place>"} if the user asks to go to one of '
+                     'them, otherwise {"place": "none"}.'},
+                    {"role": "user", "content": "take me to the " + next(iter(names.values()))},
+                    {"role": "assistant", "content": json.dumps({"place": next(iter(names.values()))})},
+                    {"role": "user", "content": "what is the weather"},
+                    {"role": "assistant", "content": '{"place": "none"}'},
+                    {"role": "user", "content": text}]}
+        req = urllib.request.Request(SLM_URL, json.dumps(body).encode(),
+                                     {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                place = str(json.loads(json.loads(r.read())["message"]["content"])["place"]).lower().strip()
+        except Exception as e:  # SLM down or bad JSON: fall back to regex
+            self.get_logger().warn(f"SLM unavailable ({e}); using regex")
+            return None
+        return place if place in names.values() else "none"
+
     def on_text(self, text):
         t = text.lower()
         if STOP.search(t):
@@ -70,17 +102,20 @@ class VoiceNav(Node):
                 self.goal_handle.cancel_goal_async()
             self.say("Stopping.")
             return
+        names = {k: k.replace("_", " ") for k in self.places}
+        slm = self.slm_place(t, names)  # None when the SLM is down: regex path below
+        if slm == "none":
+            return  # ordinary speech near the chair is ignored
         m = GO.search(t)
         # A bare place name ("kitchen.") counts as a command, because a pause often splits
         # "take me to the" from the place; anything longer without a verb is ignored.
         bare = re.sub(r"[^a-z ]", "", t).strip()
-        if not m and len(bare.split()) > 3:
+        if not slm and not m and len(bare.split()) > 3:
             return  # ordinary speech near the chair is ignored
-        target = re.sub(r"\b(please|now|thanks?)\b", "", m["t"] if m else bare).strip()
-        names = {k: k.replace("_", " ") for k in self.places}
+        target = slm or re.sub(r"\b(please|now|thanks?)\b", "", m["t"] if m else bare).strip()
         match = process.extractOne(target, names, scorer=fuzz.WRatio, score_cutoff=85)
         if not match:
-            if m:
+            if m or slm:
                 self.say(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
             return
         if self.busy:
