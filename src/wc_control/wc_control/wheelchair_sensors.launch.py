@@ -160,7 +160,9 @@ def generate_launch_description():
             # Now matches side cameras: 424x240@6Hz depth-only. IMU unaffected (separate stream).
             'enable_color': 'false',
             'align_depth.enable': 'false',
-            'depth_module.depth_profile': '424x240x6',
+            # D455 on a USB 2.1 link offers no 424x240 mode and falls back to 640x480x15;
+            # 480x270x5 is the closest available load to the 424x240@6 design.
+            'depth_module.depth_profile': '480x270x5',
             # Point cloud for scan_fusion + STVL
             'pointcloud.enable': 'true',
             'pointcloud.stream_filter': '0',        # RS2_STREAM_DEPTH (was 2/COLOR — color is now disabled)

@@ -279,7 +279,7 @@ def generate_launch_description():
     left_cam = TimerAction(
         period=5.0,  # After front camera from wheelchair_sensors_launch (~3s)
         actions=[
-            LogInfo(msg='[CAMERA] Starting LEFT D455 (424x240@6Hz depth only)...'),
+            LogInfo(msg='[CAMERA] Starting LEFT D455 (480x270@5Hz depth only)...'),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(rs_launch_path),
                 launch_arguments={
@@ -290,7 +290,8 @@ def generate_launch_description():
                     'enable_gyro': 'false',
                     'enable_accel': 'false',
                     'enable_color': 'false',
-                    'depth_module.depth_profile': '424x240x6',
+                    # D455 on USB 2.1 has no 424x240 mode; 480x270x5 is the closest load.
+                    'depth_module.depth_profile': '480x270x5',
                     'pointcloud.enable': 'true',
                     'pointcloud.stream_filter': '0',
                     'pointcloud.stream_index_filter': '0',
