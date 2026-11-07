@@ -41,12 +41,14 @@
                
         <!-- ros2_control Common Interfaces -->
         <!-- Left Wheel Joint (from your URDF: leftwheel) -->
-        <!-- SAFETY: ±3.5 rad/s — enough for 0.30 m/s + 0.60 rad/s combined (needs 3.08) + margin -->
+        <!-- SAFETY: ±5.5 rad/s — enough for 0.55 m/s + 0.85 rad/s combined (needs 5.18) + margin.
+             2026-11-07: was ±3.5 (sized for 0.30 m/s + 0.60 rad/s); ros2_control enforces it per
+             wheel, so at 0.50 m/s cruise a turn would have clipped the outer wheel and bent the path. -->
         <!-- Was ±10 rad/s (1.52 m/s per wheel) — 6x over intended max! -->
         <joint name="leftwheel">
             <command_interface name="velocity">
-                <param name="min">-3.5</param>
-                <param name="max">3.5</param>
+                <param name="min">-5.5</param>
+                <param name="max">5.5</param>
             </command_interface>
             <state_interface name="position" />
             <state_interface name="velocity" />
@@ -55,8 +57,8 @@
         <!-- Right Wheel Joint (from your URDF: rightwheel) -->
         <joint name="rightwheel">
             <command_interface name="velocity">
-                <param name="min">-3.5</param>
-                <param name="max">3.5</param>
+                <param name="min">-5.5</param>
+                <param name="max">5.5</param>
             </command_interface>
             <state_interface name="position" />
             <state_interface name="velocity" />
