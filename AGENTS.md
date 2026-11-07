@@ -6,7 +6,7 @@ The goal is a powered wheelchair that drives itself to a place the rider names. 
 
 ### Mode 1: ROS autonomous navigation (done)
 
-The chair localizes on a saved map with AMCL, using the fused lidar and 3-camera depth scan. It plans with SmacPlanner2D and follows the path with RPP. The current real-chair config is `src/wheelchair_navigation/config/nav2_params_3cam_v31.yaml`, launched by `src/wheelchair_bringup/launch/wheelchair_fusion_nav.launch.py`. A goal behind the chair should make it rotate in place and then drive forward, never reverse the whole way.
+The chair localizes on a saved map with AMCL, using the fused lidar and 3-camera depth scan. It plans with SmacPlanner2D and follows the path with RPP. On the real chair it runs `src/wheelchair_navigation/config/nav2_params_3cam_v29.yaml`, launched by `src/wheelchair_bringup/launch/wheelchair_fusion_nav.launch.py`; that launch defaults to each branch's own params file from the table below. A goal behind the chair should make it rotate in place and then drive forward, never reverse the whole way.
 
 Two issues are still open:
 
@@ -35,7 +35,7 @@ Each mode has its own Nav2 params file in `src/wheelchair_navigation/config/`:
 | 2, voice + SLM | `nav2_params_3cam_v31.yaml` |
 | 3, voice + VLM | `nav2_params_3cam_v30.yaml` |
 
-Fixes flow forward in mode order: v29 to v31, then v31 to v30. When a fix lands in an earlier mode's file, carry it into the later ones unless that file already solves the problem its own way. For example, v30 keeps its SmacPlannerHybrid and its `FollowPathReverse` recovery controller. These three files are edited in place, which overrides the "DO NOT EDIT, create a new versioned file" line in their headers. Git keeps the history. Record each carried fix in the target file's header under "CHANGES" or "CARRIED FROM". `gazebo_sim.launch.py` defaults to v30, so to test v29 or v31 pass `nav2_params_file:=<path>`. `src/wheelchair_description/config/nav2_sim.yaml` overrides `inflation_radius` to 0.65 in sim for every version, so sim won't show inflation differences between them.
+Fixes flow forward in mode order: v29 to v31, then v31 to v30. When a fix lands in an earlier mode's file, carry it into the later ones unless that file already solves the problem its own way. For example, v30 keeps its `FollowPathReverse` recovery controller. v30 used SmacPlannerHybrid until 2026-11-07; it hit "exceeded maximum iterations" on longer routes, so it now uses SmacPlanner2D like v29 and v31. These three files are edited in place, and git keeps the history. Record each carried fix in the target file's header under "CHANGES" or "CARRIED FROM". `gazebo_sim.launch.py` defaults to v30, so to test v29 or v31 pass `nav2_params_file:=<path>`. `src/wheelchair_description/config/nav2_sim.yaml` overrides `inflation_radius` to 0.65 in sim for every version, so sim won't show inflation differences between them.
 
 ### Order of work
 
