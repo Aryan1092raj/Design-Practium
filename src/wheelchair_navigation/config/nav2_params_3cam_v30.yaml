@@ -73,6 +73,10 @@
 # CHANGES 2026-11-07 (Mode 3):
 #   1. Planner SmacPlannerHybrid -> SmacPlanner2D with downsampling, as in v29
 #      and v31, which pass 5/5 in small_house. FollowPathReverse is kept.
+#   2. global_costmap always_send_full_costmap false -> true. vlm_nav.py picks
+#      standoff and exploration goals from /global_costmap/costmap and does not
+#      read the incremental updates, so it only saw the first map and missed
+#      live obstacles. 1 Hz full maps at 0.05 m are ~110 KB/s on small_house.
 ###############################################################################
 ###############################################################################
 # AMCL - RPLIDAR S3 OPTIMIZED
@@ -341,7 +345,7 @@ global_costmap:
         cost_scaling_factor: 3.0
         inflation_radius: 0.60          # from v31: 0.40 -> 0.60, covers the 0.57 m turn sweep (v29: MUST be >= inscribed_radius 0.38m)
 
-      always_send_full_costmap: false
+      always_send_full_costmap: true   # vlm_nav.py reads only full maps (see CHANGES 2)
 
 ###############################################################################
 # PLANNER SERVER - SmacPlanner2D (2026-11-07; v30 used SmacPlannerHybrid before)

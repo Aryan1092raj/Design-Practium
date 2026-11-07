@@ -58,8 +58,17 @@ EXPLORE_STEP = 3.0  # m; how far each exploration drive goes at most
 BACKOFF = 0.7  # m; an exploration goal stops this far short of the first non-free cell
 MAX_RANGE = 4.0  # beyond this the depth is not trusted: drive along the bearing and look again
 APPROACHES = 4  # looks per command: the first, plus re-looks after driving toward a far sighting
+# The front camera (1.34 m up, 64 degree vertical FOV) sees the floor only beyond ~2.2 m, so a close-in
+# drive stops this far from a sighting; closer, a low object (a dumbbell) drops out of the frame.
+MIN_SIGHT = 2.5
 FREE_COST = 50  # global costmap cells below this count as free for a goal
-
+REVISIT = 1.0  # m; exploration skips goals this close to a spot already scanned for the command
+# The chair turns in place about its drive axle, 0.32 m behind base_link (urdf wheel joints;
+# Gazebo poses after four spins all sat within 6 cm of one axle point). Goals keep lethal cells
+# TURN_CLEAR from the axle: the padded front corner (0.80, 0.38) from it sweeps 0.89 m, plus
+# Nav2's 0.15 m goal tolerance.
+AXLE_BACK = 0.32
+TURN_CLEAR = 1.04
 STOP = re.compile(r"\b(stop|halt|cancel)\b")
 GO = re.compile(r"\b(?:go|take me|bring me|drive|move|head|navigate)\b.*?\b(?:to|towards?|near)\s+"
                 r"(?:the |a |an |my )?(?P<t>[a-z ]+)")
@@ -171,7 +180,9 @@ class VoiceNav(Node):
                 # they are (a fridge outside the kitchen). Close in along the bearing, look again.
                 # straight along the bearing when the line is open, else let Nav2 route to the
                 # rough estimate (the fridge seen 12 m away from the bedroom, behind walls)
-                step = self.explore_goal(bearing) or goal
+                # shortcut: the Nav2 fallback goes to the standoff, inside MIN_SIGHT, so a floor
+                # object seen behind a wall can drop out of view; stop MIN_SIGHT short if that shows up
+                step = self.explore_goal(bearing, min(EXPLORE_STEP, rng - MIN_SIGHT)) or goal
                 if step is None:
                     self.say(f"I see the {target}, but I can't get closer to it.")
                     return
@@ -239,6 +250,7 @@ class VoiceNav(Node):
     def find(self, target, deadline):
         """Scan 360 degrees; if the target is not seen, let the VLM pick the view most likely to
         lead to it, drive a few metres that way and scan again, until the deadline."""
+        scanned = []  # (x, y) of each full scan, so exploration doesn't drive back to one
         while time.time() < deadline and not self.cancelled.is_set():
             views = []  # (rgb, map yaw) of each look, for the direction question
             for turn in range(LOOKS):
@@ -267,8 +279,12 @@ class VoiceNav(Node):
             if not go:
                 self.get_logger().info(f"VLM sees no promising direction for '{target}'")
                 return None
-            # the chosen direction first; if it is blocked within a metre, the other views
-            goal = next((g for g in (self.explore_goal(v[1]) for v in
+            pose = self.pose()
+            if pose:
+                scanned.append(pose[:2])
+            # the chosen direction first; if it is blocked within a metre or leads back to a
+            # spot already scanned, the other views
+            goal = next((g for g in (self.explore_goal(v[1], avoid=scanned) for v in
                                      [views[go - 1]] + views[:go - 1] + views[go:]) if g), None)
             if goal is None or time.time() > deadline:
                 return None
@@ -286,7 +302,9 @@ class VoiceNav(Node):
         spin = Spin.Goal()
         spin.target_yaw = angle
         spin.time_allowance.sec = 30
-        ok = self.send(self.spin_client, spin) is not None
+        # only a finished turn counts: an aborted spin left all four "views" on one heading, and
+        # the direction the VLM picked from them was not the one it saw
+        ok = self.send(self.spin_client, spin) == GoalStatus.STATUS_SUCCEEDED
         time.sleep(1.0)  # fresh frames after the turn
         return ok
 
@@ -327,20 +345,26 @@ class VoiceNav(Node):
         self.get_logger().info(f"VLM 4-view answer for '{target}': {text.strip()!r}")
         return seen, go
 
-    def explore_goal(self, yaw):
-        """A free spot up to EXPLORE_STEP metres along yaw, short of the first blocked cell, so
-        the chair heads into the open space the view shows instead of a room behind a wall."""
+    def explore_goal(self, yaw, step=EXPLORE_STEP, avoid=()):
+        """A free spot up to step metres along yaw, short of the first blocked cell, so the chair
+        heads into the open space the view shows instead of a room behind a wall. Skips spots
+        within REVISIT of the points in avoid."""
         pose = self.pose()
         if pose is None:
             return None
         for a in (yaw, yaw + 0.4, yaw - 0.4):
-            d = 0.0
-            while d < EXPLORE_STEP and self.free((pose[0] + (d + 0.05) * math.cos(a),
-                                                  pose[1] + (d + 0.05) * math.sin(a))):
-                d += 0.05
-            d = d - BACKOFF if d < EXPLORE_STEP else d
-            if d >= 1.0:
-                return pose[0] + d * math.cos(a), pose[1] + d * math.sin(a), a
+            at = lambda d: (pose[0] + d * math.cos(a), pose[1] + d * math.sin(a))
+            k, n = 0, int(step / 0.05 + 1e-6)  # 5 cm samples; integers so the cap is exact
+            while k < n and self.free(at((k + 1) * 0.05)):
+                k += 1
+            d = k * 0.05 - (BACKOFF if k < n else 0.0)
+            # the goal itself on a zero-cost cell: goals in the inflation edge drew "collision
+            # ahead" and a recovery in sim. It also needs room for the 4-view scan's spins: a
+            # cost-0 goal 0.63 m from the dumbbell rack let the corners clip it and wedge the chair
+            while d >= 1.0 and not (self.free(at(d), 1) and self.clear(at(d), a)):
+                d -= 0.05
+            if d >= 1.0 and all(math.dist(at(d), s) > REVISIT for s in avoid):
+                return (*at(d), a)
         return None
 
     def ground(self, cam, target):
@@ -386,8 +410,9 @@ class VoiceNav(Node):
         point = np.array([(u - k[2]) / k[0] * z, (v - k[5]) / k[4] * z, z])  # optical frame
         obj = (r @ point + t)[:2]
         chair = np.array([chair.x, chair.y])
-        self.get_logger().info(f"{target}: map ({obj[0]:.2f}, {obj[1]:.2f}), "
-                               f"chair at ({chair[0]:.2f}, {chair[1]:.2f})")
+        raw, obj = obj, self.near_face(chair, obj)
+        self.get_logger().info(f"{target}: map ({obj[0]:.2f}, {obj[1]:.2f}) (depth ({raw[0]:.2f}, "
+                               f"{raw[1]:.2f})), chair at ({chair[0]:.2f}, {chair[1]:.2f})")
         d = obj - chair
         return self.standoff(obj, chair), float(np.hypot(*d)), math.atan2(d[1], d[0])
 
@@ -425,6 +450,8 @@ class VoiceNav(Node):
         # padded by half the box on each side for context, rejects those. On saved sim views it
         # passed no false box (a bare tight crop passed one and lost two real ones), but it also
         # drops small objects such as a dumbbell, which a closer look after exploring can find.
+        # A full-resolution, min-size crop padded black off the frame did worse on the same views:
+        # two false boxes at the frame edge and one real dumbbell lost.
         pw, ph = (x2 - x1) // 2, (y2 - y1) // 2
         crop = img[max(y1 - ph, 0):min(y2 + ph, VLM_H), max(x1 - pw, 0):min(x2 + pw, VLM_W)]
         answer = self.ask(crop, f"Is there a {target} in the middle of this image? "
@@ -439,19 +466,53 @@ class VoiceNav(Node):
             for dth in (0.0, 0.5, -0.5, 1.0, -1.0):
                 a = base + dth
                 g = obj - dist * np.array([math.cos(a), math.sin(a)])
-                if self.free(g):
+                # room to turn in place: a cost-30 goal 0.66 m from the sim bed's corner trapped
+                # the chair (spin and backup both "Collision Ahead")
+                if self.clear(g, a):
                     return g[0], g[1], a  # yaw a faces the object
         return None
 
-    def free(self, p):
+    def near_face(self, chair, obj):
+        """The first lethal costmap cell on the line from the chair through the depth estimate,
+        from 1.2 m before it to 1.0 m past it. In sim, depth on partial or edge-clipped boxes put
+        the bed and sofa estimates inside the object (no free standoff) and the wardrobe 0.7 m
+        short of it (the front stopped 1.1 m away). Far sightings and objects the costmap does
+        not hold (a dumbbell) keep the depth estimate."""
+        d = obj - chair
+        rng = float(np.hypot(*d))
+        if not 0.3 < rng <= MAX_RANGE or self.costmap is None:
+            return obj
+        # half-cell samples so a diagonal ray can't step over a lethal cell
+        for s in np.arange(max(rng - 1.0, 0.3), rng + 1.0, self.costmap.info.resolution / 2):
+            if self.cost(chair + s * d / rng) == 100:  # OccupancyGrid 100 = lethal
+                return chair + s * d / rng
+        return obj
+
+    def clear(self, p, yaw, r=TURN_CLEAR):
+        """No lethal cell (and nothing unknown) within r of the axle of a chair at p facing yaw.
+        Lethal only: also rejecting inscribed cells added 0.35 m, so in m3_n no standoff passed
+        next to the sofa.
+        shortcut: Nav2 ignores goal yaw, so this assumes the chair arrives facing yaw (the drive
+        or approach direction); check the real arrival heading if a goal still traps it."""
+        res = self.costmap.info.resolution
+        n = round(r / res)
+        cx, cy =p[0] - AXLE_BACK * math.cos(yaw), p[1] - AXLE_BACK * math.sin(yaw)
+        return all(0 <= self.cost((cx + i * res, cy + j * res)) < 100
+                   for i in range(-n, n + 1) for j in range(-n, n + 1) if i * i + j * j <= n * n)
+
+    def cost(self, p):
+        """Global costmap value at p: 0-100, or -1 for unknown or off the map."""
         m = self.costmap
         if m is None:
-            return False
-        i = int((p[0] - m.info.origin.position.x) / m.info.resolution)
-        j = int((p[1] - m.info.origin.position.y) / m.info.resolution)
+            return -1
+        i = math.floor((p[0] - m.info.origin.position.x) / m.info.resolution)
+        j = math.floor((p[1] - m.info.origin.position.y) / m.info.resolution)
         if not (0 <= i < m.info.width and 0 <= j < m.info.height):
-            return False
-        return 0 <= m.data[j * m.info.width + i] < FREE_COST
+            return -1
+        return m.data[j * m.info.width + i]
+
+    def free(self, p, limit=FREE_COST):
+        return 0 <= self.cost(p) < limit
 
 
 def listen(node, stt):
