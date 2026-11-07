@@ -13,6 +13,7 @@ install(
 )
 
 install(PROGRAMS scripts/go_to_location.py scripts/odom_axle_to_base.py scripts/voice_nav.py
+  scripts/vlm_nav.py scripts/save_location.py scripts/map_erase.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

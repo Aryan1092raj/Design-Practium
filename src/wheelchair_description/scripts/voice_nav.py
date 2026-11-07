@@ -72,8 +72,12 @@ class VoiceNav(Node):
         Returns the place name, "none" when the text is not a go-to command, or None when
         the SLM is unreachable so the caller falls back to the regex matcher.
         """
-        body = {"model": SLM_MODEL, "stream": False, "think": False, "format": "json",
-                "keep_alive": "30m", "options": {"temperature": 0, "num_predict": 24},
+        # A schema with an enum, not plain "json": with plain json qwen3:0.6b padded the reply
+        # with newlines until num_predict ran out, and the JSON never closed.
+        schema = {"type": "object", "required": ["place"], "properties": {
+            "place": {"type": "string", "enum": [*names.values(), "none"]}}}
+        body = {"model": SLM_MODEL, "stream": False, "think": False, "format": schema,
+                "keep_alive": "30m", "options": {"temperature": 0, "num_predict": 64},  # 24 cut the JSON short
                 "messages": [
                     {"role": "system", "content":
                      "A wheelchair voice command. Places: " + ", ".join(names.values()) + ". "
@@ -102,8 +106,11 @@ class VoiceNav(Node):
                 self.goal_handle.cancel_goal_async()
             self.say("Stopping.")
             return
+        if not self.places:
+            self.say("No places saved. Record them with save_location.py, then restart me.")
+            return
         names = {k: k.replace("_", " ") for k in self.places}
-        slm = self.slm_place(t, names)  # None when the SLM is down: regex path below
+        slm =self.slm_place(t, names)  # None when the SLM is down: regex path below
         if slm == "none":
             return  # ordinary speech near the chair is ignored
         m = GO.search(t)

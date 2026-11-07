@@ -159,7 +159,7 @@ controller_server:
       use_velocity_scaled_lookahead_dist: false
       use_rotate_to_heading: true         # v31: turn in place to face the path
       rotate_to_heading_min_angle: 0.785  # v31: 0.35 -> 0.785 (45 deg); below that, drive a curve
-      rotate_to_heading_angular_vel: 0.5
+      rotate_to_heading_angular_vel: 0.8  # 0.5 made a U-turn too slow on the real chair
       max_angular_accel: 3.2              # v31: 0.8 -> 3.2; at 0.8 a turn from rest stalls near 0.04 rad/s
       allow_reversing: false              # v31: never reverse while following a path
       transform_tolerance: 5.0    # v29: tolerate AMCL TF gaps
@@ -288,8 +288,8 @@ planner_server:
     GridBased:
       plugin: "nav2_smac_planner::SmacPlanner2D"
       tolerance: 0.20
-      downsample_costmap: false
-      downsampling_factor: 1
+      downsample_costmap: true     # plan at 0.04 m: at the map's 0.02 m, 17 m routes hit max_iterations
+      downsampling_factor: 2
       allow_unknown: true
       max_iterations: 500000
       max_on_approach_iterations: 1000
@@ -357,10 +357,10 @@ velocity_smoother:
     smoothing_frequency: 40.0
     scale_velocities: true
     feedback: "OPEN_LOOP"
-    max_velocity: [0.25, 0.0, 0.50]
-    min_velocity: [-0.15, 0.0, -0.50]
-    max_accel: [0.25, 0.0, 0.8]
-    max_decel: [-0.25, 0.0, -0.8]
+    max_velocity: [0.25, 0.0, 0.80]   # angular 0.50 -> 0.80 to match rotate_to_heading_angular_vel
+    min_velocity: [-0.15, 0.0, -0.80]
+    max_accel: [0.25, 0.0, 1.2]       # angular 0.8 -> 1.2
+    max_decel: [-0.25, 0.0, -1.2]
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1
     deadband_velocity: [0.02, 0.0, 0.02]
