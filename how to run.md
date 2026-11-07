@@ -1,7 +1,9 @@
 # How to run: voice mode and voice + VLM mode (simulation)
 
 Both modes run in the Gazebo sim on the saved `small_house` map. Voice mode sends the chair to the
-named places in `src/wheelchair_description/config/locations.yaml` (bedroom, kitchen, living_room).
+named places in `src/wheelchair_description/config/locations_sim.yaml` (bedroom, kitchen, living
+room, gym, balcony). Each place has a short description, so "I'm hungry" works as well as "take me
+to the kitchen".
 Voice + VLM mode also takes objects ("take me to the bed"): it looks for them with the three
 simulated RGB-D cameras and Qwen2.5-VL 3B, then drives to a free spot next to the object.
 
@@ -36,6 +38,12 @@ internet):
 cd ~/wheelchair_nav
 /usr/bin/python3 -m venv --system-site-packages .venv-voice
 .venv-voice/bin/pip install faster-whisper rapidfuzz
+```
+
+For voice mode, the place model (it matches requests such as "I want to watch TV"):
+
+```bash
+ollama pull qwen3:4b
 ```
 
 For voice + VLM only, the model:
@@ -98,10 +106,13 @@ ros2 topic pub --once -w 1 /initialpose geometry_msgs/msg/PoseWithCovarianceStam
 
 ```bash
 source .venv-voice/bin/activate
-ros2 run wheelchair_description voice_nav.py
+ros2 run wheelchair_description voice_nav.py --ros-args -p locations:=locations_sim.yaml
 ```
 
-When it prints `Voice navigation ready.`, say "take me to the kitchen" (or bedroom, living room).
+On the real chair, leave out `--ros-args ...`: it then reads the lab places in `locations.yaml`.
+
+When it prints `Voice navigation ready.`, say "take me to the kitchen" (or bedroom, living room,
+gym, balcony), or what you want to do there, such as "I want to watch TV".
 Say "stop" to cancel. To test without a microphone, type the command in terminal 2:
 
 ```bash
