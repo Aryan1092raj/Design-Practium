@@ -15,8 +15,8 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 
 
-def load_locations():
-    path = get_package_share_directory("wheelchair_description") + "/config/locations.yaml"
+def load_locations(file="locations.yaml"):
+    path = get_package_share_directory("wheelchair_description") + "/config/" + file
     with open(path) as f:
         return yaml.safe_load(f)
 

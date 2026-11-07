@@ -33,9 +33,9 @@ class TwistToTwistStamped(Node):
         self.get_logger().info('Twist to TwistStamped converter started')
     
     # Safety limits — last software defense before Arduino motors
-    MAX_LINEAR = 0.30    # m/s forward
+    MAX_LINEAR = 0.55    # m/s forward, above Nav2's 0.50 cruise
     MIN_LINEAR = -0.15   # m/s reverse
-    MAX_ANGULAR = 0.50   # rad/s
+    MAX_ANGULAR = 0.85   # rad/s, above RPP's 0.80 rotate-to-heading
 
     def twist_callback(self, msg):
         twist_stamped = TwistStamped()

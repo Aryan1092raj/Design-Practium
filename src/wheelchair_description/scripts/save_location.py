@@ -52,6 +52,8 @@ def main():
         entry = {"x": round(p.position.x, 2), "y": round(p.position.y, 2),
                  "yaw": round(2 * math.atan2(p.orientation.z, p.orientation.w), 2)}
     places = load_locations() or {}
+    if "desc" in (places.get(name) or {}):
+        entry["desc"] = places[name]["desc"]  # re-saving a spot keeps what the place is for
     places[name] = entry
     path = get_package_share_directory("wheelchair_description") + "/config/locations.yaml"
     with open(path, "w") as f:
