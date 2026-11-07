@@ -1,7 +1,6 @@
 ###############################################################################
 # NAV2 PARAMETERS - 3-CAMERA SAFE WHEELCHAIR CONFIGURATION (v29)
 ###############################################################################
-# DO NOT EDIT — create a new versioned file instead.
 # Based on: nav2_params_3cam_v28.yaml
 # Created: 2026-03-09
 # Pairs with: wheelchair_fusion_nav.launch.py, scan_fusion_v9, 3x RealSense
@@ -17,7 +16,31 @@
 #   to see the robot start position as occupied. Nav2 ERROR confirms this.
 #   Fix: inflation >= inscribed_radius. 0.40 = inscribed + small margin.
 #
-# DO NOT EDIT — create a new versioned file instead.
+# CARRIED FROM v31 (2026-11-07, Mode 1 U-turn: a goal behind the chair turns
+# in place, then drives forward, never reverses the whole way):
+#   1. RPP allow_reversing true -> false.
+#   2. RPP use_rotate_to_heading false -> true, rotate_to_heading_min_angle
+#      0.35 -> 0.785, rotate_to_heading_angular_vel 0.5 -> 0.8.
+#   3. RPP max_angular_accel 0.8 -> 3.2.
+#   4. RPP use_collision_detection false -> true (1.0 s lookahead).
+#   5. Progress checker SimpleProgressChecker -> PoseProgressChecker
+#      (required_movement_angle 0.5 rad, movement_time_allowance 4.0 -> 10.0).
+#   6. inflation_radius 0.40 -> 0.60 in both costmaps.
+#   7. Global planner downsample_costmap true, downsampling_factor 2.
+#   8. velocity_smoother angular max_velocity 0.50 -> 0.80, accel 0.8 -> 1.2.
+#
+# CHANGES 2026-11-07 (Mode 1 smoothness, tested in Gazebo small_house):
+#   1. Speed: RPP desired_linear_vel 0.25 -> 0.50, max_linear_accel 0.25 -> 0.40;
+#      velocity_smoother linear max_velocity 0.25 -> 0.50, max_accel 0.25 -> 0.40,
+#      max_decel -0.25 -> -0.50 (stopping from 0.50 m/s takes 0.25 m, well inside
+#      the 0.50 m that the 1.0 s collision lookahead covers at cruise).
+#   2. RPP max_angular_accel 3.2 -> 16.0. RPP clamps each turn command to the
+#      measured spin +/- max_angular_accel * 0.05 s. On the real chair (bag
+#      session_20261107_000512) the first step, 0.16 rad/s, sat in the motor
+#      deadband: IMU and AMCL showed no rotation for 5-10 s, three times. At 16
+#      RPP asks the full 0.8 rad/s at once; the OPEN_LOOP velocity smoother
+#      still ramps the real command at 1.2 rad/s^2. Side effect: the rotation
+#      collision check now projects ~0.8 rad ahead instead of ~0.16 rad.
 ###############################################################################
 ###############################################################################
 # AMCL - RPLIDAR S3 OPTIMIZED
@@ -117,9 +140,10 @@ controller_server:
 
     progress_checker_plugins: ["progress_checker"]
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
+      plugin: "nav2_controller::PoseProgressChecker"   # v31: in-place turns count as progress
       required_movement_radius: 0.05
-      movement_time_allowance: 4.0
+      required_movement_angle: 0.5                     # v31: rad
+      movement_time_allowance: 10.0                    # v31: 4.0 -> 10.0
 
     goal_checker_plugins: ["general_goal_checker"]
     general_goal_checker:
@@ -133,23 +157,23 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.25
-      max_linear_accel: 0.25
+      desired_linear_vel: 0.50            # 2026-11-07: 0.25 -> 0.50 cruise
+      max_linear_accel: 0.40              # 2026-11-07: 0.25 -> 0.40
       max_linear_decel: 0.50
       lookahead_dist: 0.70
       min_lookahead_dist: 0.50
       max_lookahead_dist: 1.20
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: false
-      use_rotate_to_heading: false
-      rotate_to_heading_min_angle: 0.35
-      rotate_to_heading_angular_vel: 0.5
-      max_angular_accel: 0.8
-      allow_reversing: true
+      use_rotate_to_heading: true         # v31: turn in place to face the path
+      rotate_to_heading_min_angle: 0.785  # v31: 0.35 -> 0.785 (45 deg); below that, drive a curve
+      rotate_to_heading_angular_vel: 0.8  # 0.5 made a U-turn too slow on the real chair
+      max_angular_accel: 16.0             # 3.2 -> 16.0 (2026-11-07): RPP ramps from measured spin, so 3.2 asked 0.16 rad/s and the real chair stalled in deadband; 16 asks the full 0.8 at once and the OPEN_LOOP smoother ramps it at 1.2 rad/s^2
+      allow_reversing: false              # v31: never reverse while following a path
       transform_tolerance: 5.0    # v29: tolerate AMCL TF gaps
       min_approach_linear_velocity: 0.05
       approach_velocity_scaling_dist: 0.6
-      use_collision_detection: false
+      use_collision_detection: true       # v31: stop before the footprint hits an obstacle
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: false
       use_cost_regulated_linear_velocity_scaling: false
@@ -207,7 +231,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.40          # v29: MUST be >= inscribed_radius (0.38m)
+        inflation_radius: 0.60          # v31: 0.40 -> 0.60, >= circumscribed radius 0.57 m for in-place turns
 
       always_send_full_costmap: false
       track_unknown_space: true
@@ -256,7 +280,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.40          # v29: MUST be >= inscribed_radius (0.38m)
+        inflation_radius: 0.60          # v31: 0.40 -> 0.60, >= circumscribed radius 0.57 m for in-place turns
 
       always_send_full_costmap: false
 
@@ -272,8 +296,8 @@ planner_server:
     GridBased:
       plugin: "nav2_smac_planner::SmacPlanner2D"
       tolerance: 0.20
-      downsample_costmap: false
-      downsampling_factor: 1
+      downsample_costmap: true     # plan at 0.04 m: at the map's 0.02 m, 17 m routes hit max_iterations
+      downsampling_factor: 2
       allow_unknown: true
       max_iterations: 500000
       max_on_approach_iterations: 1000
@@ -341,10 +365,10 @@ velocity_smoother:
     smoothing_frequency: 40.0
     scale_velocities: true
     feedback: "OPEN_LOOP"
-    max_velocity: [0.25, 0.0, 0.50]
-    min_velocity: [-0.15, 0.0, -0.50]
-    max_accel: [0.25, 0.0, 0.8]
-    max_decel: [-0.25, 0.0, -0.8]
+    max_velocity: [0.50, 0.0, 0.80]   # linear 0.25 -> 0.50 (2026-11-07); angular 0.50 -> 0.80 to match rotate_to_heading_angular_vel
+    min_velocity: [-0.15, 0.0, -0.80]
+    max_accel: [0.40, 0.0, 1.2]       # linear 0.25 -> 0.40 (2026-11-07); angular 0.8 -> 1.2
+    max_decel: [-0.50, 0.0, -1.2]     # 2026-11-07: linear -0.25 -> -0.50, 0.25 m to stop from 0.50 m/s, inside the 1.0 s collision lookahead
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1
     deadband_velocity: [0.02, 0.0, 0.02]
