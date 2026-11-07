@@ -224,7 +224,8 @@ class VoiceNav(Node):
                 spin = Spin.Goal()
                 spin.target_yaw = math.pi / 2
                 spin.time_allowance.sec = 30
-                self.send(self.spin_client, spin)
+                if self.send(self.spin_client, spin) is None:
+                    return None  # Nav2 gone or spin rejected: rescanning the same view is pointless
                 time.sleep(1.0)  # fresh frames after the turn
             if self.cancelled.is_set():
                 return None
