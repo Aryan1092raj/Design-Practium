@@ -40,7 +40,7 @@ def generate_launch_description():
     # Default configurations - use package paths where possible
     default_map_file = os.path.join(ws_root, 'maps', 'real_chair_indoor_2026-11-05_v2.yaml')
     # v31 = real-chair v29 + turn in place instead of reversing; v3 is the BT that pairs with v29.
-    default_nav2_params = os.path.join(wheelchair_navigation_dir, 'config', 'nav2_params_3cam_v31.yaml')
+    default_nav2_params = os.path.join(wheelchair_navigation_dir, 'config', 'nav2_params_3cam_v29.yaml')  # Mode 1 (AGENTS.md)
     default_bt_xml = os.path.join(wheelchair_navigation_dir, 'behavior_tree', 'wheelchair_robust_nav_v3.xml')
     default_rviz_config = os.path.join(wheelchair_description_dir, 'rviz', 'fusion_nav_lite.rviz')
 
