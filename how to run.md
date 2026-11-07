@@ -4,8 +4,9 @@ Both modes run in the Gazebo sim on the saved `small_house` map. Voice mode send
 named places in `src/wheelchair_description/config/locations_sim.yaml` (bedroom, kitchen, living
 room, gym, balcony). Each place has a short description, so "I'm hungry" works as well as "take me
 to the kitchen".
-Voice + VLM mode also takes objects ("take me to the bed"): it looks for them with the three
-simulated RGB-D cameras and Qwen2.5-VL 3B, then drives to a free spot next to the object.
+Voice + VLM mode takes objects instead ("take me to the bed"): it looks for them with the front
+simulated RGB-D camera and Qwen3-VL 4B Instruct, explores the house when the object is not in
+view, then drives to a free spot within 1 m of the object.
 
 The sim needs 4-6 GB of free RAM, so close browsers first. Run every command from
 `~/wheelchair_nav`.
@@ -49,7 +50,7 @@ ollama pull qwen3:4b
 For voice + VLM only, the model:
 
 ```bash
-ollama pull qwen2.5vl:3b
+ollama pull qwen3-vl:4b-instruct
 ```
 
 Build once (and after any change to `CMakeLists.txt` or a new script):
@@ -128,8 +129,9 @@ Replies are printed in terminal 3. To watch them from terminal 2: `ros2 topic ec
 
 Four terminals. Two differences from mode 1: the sim must bridge the cameras
 (`bridge_camera:=true`), and the VLM server must be running. `vlm_nav.py` is not installed by
-CMake, so it runs with `python3` from the source tree instead of `ros2 run`. Unlike `voice_nav.py`,
-it speaks its replies aloud with `spd-say` and also prints them.
+CMake, so it runs with `python3` from the source tree instead of `ros2 run`. Like `voice_nav.py`,
+it prints its replies and publishes them on `/voice/status`. In the sim it needs
+`use_sim_time:=true`, otherwise every camera frame looks stale and nothing is ever found.
 
 **Terminal 1: VLM server.** No env block needed:
 
@@ -162,11 +164,13 @@ ros2 topic hz /camera/aligned_depth_to_color/image_raw
 
 ```bash
 source .venv-voice/bin/activate
-python3 src/wheelchair_description/scripts/vlm_nav.py
+python3 src/wheelchair_description/scripts/vlm_nav.py --ros-args -p use_sim_time:=true
 ```
 
-When it says `Voice navigation ready.`, say "take me to the bed" (any object), or a named place
-like "take me to the kitchen" (named places skip the VLM). Say "stop" to cancel. To test without a
+When it says `Voice navigation ready.`, say "take me to the bed" (any object). If the object is
+not in view after a full turn, the VLM picks the most promising direction, the chair drives up to
+3 m that way and looks again, for up to 3 minutes; then it says the object was not found. Say
+"stop" to cancel. To test without a
 microphone, type in terminal 3:
 
 ```bash
