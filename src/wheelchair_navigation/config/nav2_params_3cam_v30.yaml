@@ -46,8 +46,17 @@
 #      from the chair's heading with footprint checks, so it curves forward
 #      away from the obstacle instead.
 #
-# Everything else is unchanged from v29 (inflation_radius 0.40 >= inscribed
-# radius, AMCL update_min_d/a 0.01, costmap transform_tolerance 5.0).
+# CARRIED FROM v31 (2026-11-07, edited in place; v30 is the voice + VLM mode file):
+#   9. RPP rotate_to_heading_angular_vel 0.5 -> 0.8, velocity_smoother angular
+#      max/min velocity +-0.5 -> +-0.8 and max accel/decel +-0.8 -> +-1.2. These
+#      match the turn-in-place speed tuned in v31 and speed up the VLM's 90 deg
+#      scan turns.
+#  10. inflation_radius 0.40 -> 0.60 in both costmaps. An in-place turn sweeps
+#      the footprint's circumscribed radius, 0.57 m. Sim doesn't test this:
+#      nav2_sim.yaml forces 0.65 there.
+#
+# Everything else is unchanged from v29 (AMCL update_min_d/a 0.01, costmap
+# transform_tolerance 5.0).
 #
 # DO NOT EDIT — create a new versioned file instead.
 ###############################################################################
@@ -176,7 +185,7 @@ controller_server:
       use_velocity_scaled_lookahead_dist: false
       use_rotate_to_heading: true         # v30: turn in place to face the path
       rotate_to_heading_min_angle: 0.785  # v30: 0.35 -> 0.785 (45 deg); below that, drive a curve
-      rotate_to_heading_angular_vel: 0.5
+      rotate_to_heading_angular_vel: 0.8  # from v31: 0.5 -> 0.8
       max_angular_accel: 3.2              # v30: 0.8 -> 3.2; at 0.8 a turn from rest stalled near 0.05 rad/s
       allow_reversing: false              # v30: never reverse while following a path
       transform_tolerance: 5.0    # v29: tolerate AMCL TF gaps
@@ -267,7 +276,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.40          # v29: MUST be >= inscribed_radius (0.38m)
+        inflation_radius: 0.60          # from v31: 0.40 -> 0.60, covers the 0.57 m turn sweep (v29: MUST be >= inscribed_radius 0.38m)
 
       always_send_full_costmap: false
       track_unknown_space: true
@@ -316,7 +325,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.40          # v29: MUST be >= inscribed_radius (0.38m)
+        inflation_radius: 0.60          # from v31: 0.40 -> 0.60, covers the 0.57 m turn sweep (v29: MUST be >= inscribed_radius 0.38m)
 
       always_send_full_costmap: false
 
@@ -414,10 +423,10 @@ velocity_smoother:
     smoothing_frequency: 40.0
     scale_velocities: true
     feedback: "OPEN_LOOP"
-    max_velocity: [0.25, 0.0, 0.50]
-    min_velocity: [-0.10, 0.0, -0.50]   # v30: reverse capped at the v4 BackUp speed
-    max_accel: [0.25, 0.0, 0.8]
-    max_decel: [-0.25, 0.0, -0.8]
+    max_velocity: [0.25, 0.0, 0.80]     # from v31: angular 0.50 -> 0.80
+    min_velocity: [-0.10, 0.0, -0.80]   # v30: reverse capped at the v4 BackUp speed; angular from v31
+    max_accel: [0.25, 0.0, 1.2]         # from v31: angular 0.8 -> 1.2
+    max_decel: [-0.25, 0.0, -1.2]
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1
     deadband_velocity: [0.02, 0.0, 0.02]

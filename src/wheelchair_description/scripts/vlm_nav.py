@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-"""PHASE 2 (parked, not installed): voice + camera navigation, "take me to the bed" -> Nav2 goal.
+"""Voice + camera navigation with no saved places: "take me to the table" -> Nav2 goal.
 
-Tested once in the sim on 2026-10-04: named places and one camera-found object worked; the 3B
-VLM let some wrong objects through, and sim AMCL drift (> 1 m) made camera goals unreliable.
-Phase 1 is scripts/voice_nav.py (voice to named places only).
+Listens on the laptop mic and turns speech into text with faster-whisper. The target is looked
+for in the front RGB-D camera with a VLM (Qwen2.5-VL 3B); if it is not in view, the chair turns
+in place 90 degrees at a time and looks again. The bounding box plus the aligned depth give the
+object's position in the map, and the goal is a free spot a short distance in front of it.
+Nav2 does all the driving; saying "stop" cancels the goal. Replies are printed and published on
+/voice/status (the real chair has no speaker).
 
-Listens on the laptop mic and turns speech into text with faster-whisper. A target that names a
-place in config/locations.yaml goes straight to Nav2. Anything else is looked for in the three
-RGB-D cameras with a VLM (Qwen2.5-VL 3B); the bounding box plus the aligned depth give the
-object's position in the map, and the goal is a free spot a safe distance short of it.
-Nav2 does all the driving; saying "stop" cancels the goal.
-
-Needs scripts/vlm_server.sh running, and runs inside .venv-voice:
-    ros2 run wheelchair_description voice_nav.py
+Needs nav launched with front_color:=true, scripts/vlm_server.sh running, and runs inside
+.venv-voice:
+    ros2 run wheelchair_description vlm_nav.py
 Text can also be injected for testing:
     ros2 topic pub --once /voice/transcript std_msgs/String "{data: 'go to the bed'}"
 """
@@ -32,8 +30,8 @@ from faster_whisper import WhisperModel
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose, Spin
 from nav_msgs.msg import OccupancyGrid
-from rapidfuzz import fuzz, process
 from rclpy.action import ActionClient
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
@@ -41,14 +39,13 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
-from go_to_location import load_locations
-
 VLM_URL = "http://127.0.0.1:8091/v1/chat/completions"  # scripts/vlm_server.sh (Qwen2.5-VL 3B)
 # Multiples of 28 and within the server's --image-min/max-tokens, so the image is not rescaled
 # and Qwen2.5-VL returns boxes in exactly these pixels.
 VLM_W, VLM_H = 448, 336
-CAMERAS = ["camera", "mapping_camera", "right_camera"]  # front, left, right (RealSense names)
-STANDOFF = (1.5, 1.9, 2.4)  # metres short of the object; sim places needed >= 1.3 m clearance
+CAMERAS = ["camera"]  # front D455 only; the side cameras run depth-only to save USB bandwidth
+STANDOFF = (0.8, 1.1, 1.5)  # metres short of the object's near face; free() rejects inflated cells
+LOOKS = 4  # front view plus three 90-degree turns in place
 MAX_RANGE = 4.0  # stereo depth error grows with range; farther objects are looked at again on arrival
 FREE_COST = 50  # global costmap cells below this count as free for a goal
 
@@ -87,8 +84,7 @@ def to_matrix(tf):
 
 class VoiceNav(Node):
     def __init__(self):
-        super().__init__("voice_nav")
-        self.places = load_locations()
+        super().__init__("vlm_nav")
         self.frames = {c: {} for c in CAMERAS}
         for cam in CAMERAS:
             for key, typ, topic in (("rgb", Image, "color/image_raw"),
@@ -109,20 +105,12 @@ class VoiceNav(Node):
         self.spin_client = ActionClient(self, Spin, "spin")
         self.goal_handle = None
         self.busy = False
-        self.speaking = False
         self.cancelled = threading.Event()
 
     # ---- speech out / commands in -------------------------------------------------------
     def say(self, text):
         self.get_logger().info(text)
         self.status.publish(String(data=text))
-        self.speaking = True  # the mic thread drops audio meanwhile, so the chair never hears itself
-        try:
-            subprocess.run(["spd-say", "-w", text], timeout=20)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        time.sleep(0.3)
-        self.speaking = False
 
     def on_text(self, text):
         t = text.lower()
@@ -149,12 +137,6 @@ class VoiceNav(Node):
     # ---- one command, start to finish ---------------------------------------------------
     def run(self, target):
         try:
-            names = {k: k.replace("_", " ") for k in self.places}
-            match = process.extractOne(target, names, scorer=fuzz.WRatio, score_cutoff=85)
-            if match:
-                p = self.places[match[2]]
-                self.drive(target, p["x"], p["y"], p["yaw"], final=True)
-                return
             for attempt in range(2):
                 found = self.find(target)
                 if self.cancelled.is_set():
@@ -227,17 +209,17 @@ class VoiceNav(Node):
 
     # ---- semantic search ----------------------------------------------------------------
     def find(self, target):
-        """Look with all three cameras; if nothing, turn around once and look again."""
-        for turn in range(2):
+        """Look with the camera; if nothing, turn 90 degrees in place and look again."""
+        for turn in range(LOOKS):
             for cam in CAMERAS:
                 hit = self.ground(cam, target)
                 if hit:
                     self.get_logger().info(f"{target} seen by {cam} at {hit[1]:.1f} m")
                     return hit
-            if turn == 0 and not self.cancelled.is_set():
-                self.say(f"Looking behind for the {target}.")
+            if turn < LOOKS - 1 and not self.cancelled.is_set():
+                self.say(f"Turning to look for the {target}.")
                 spin = Spin.Goal()
-                spin.target_yaw = math.pi
+                spin.target_yaw = math.pi / 2
                 spin.time_allowance.sec = 30
                 self.send(self.spin_client, spin)
                 time.sleep(1.0)  # fresh frames after the turn
@@ -249,6 +231,11 @@ class VoiceNav(Node):
         f = self.frames[cam]
         if len(f) < 3:
             return None
+        stamp = Time.from_msg(f["depth"].header.stamp)
+        now = self.get_clock().now()
+        if any((now - Time.from_msg(f[k].header.stamp)).nanoseconds > 1e9 for k in ("rgb", "depth")):
+            self.get_logger().warn(f"{cam}: frames older than 1 s, camera stalled?")
+            return None  # a stale frame projected from the current pose gives a wrong goal
         box = self.vlm(to_rgb(f["rgb"]), target)
         if box is None:
             return None
@@ -268,7 +255,8 @@ class VoiceNav(Node):
         u, v = (x1 + x2) / 2, (y1 + y2) / 2
         point = np.array([(u - k[2]) / k[0] * z, (v - k[5]) / k[4] * z, z])  # optical frame
         try:
-            r, t = to_matrix(self.tf.lookup_transform("map", f["depth"].header.frame_id, Time()))
+            r, t = to_matrix(self.tf.lookup_transform("map", f["depth"].header.frame_id, stamp,
+                                                      Duration(seconds=0.5)))
             chair = self.tf.lookup_transform("map", "base_link", Time()).transform.translation
         except Exception as e:  # tf2 raises several unrelated exception types
             self.get_logger().warn(f"tf: {e}")
@@ -300,12 +288,13 @@ class VoiceNav(Node):
         m = re.search(rf"\[{num},{num},{num},{num}\]", text)
         if not m:
             return None
-        x1, y1, x2, y2 = (int(float(g)) for g in m.groups())
+        x1, x2 = (min(max(int(float(m[i])), 0), VLM_W) for i in (1, 3))
+        y1, y2 = (min(max(int(float(m[i])), 0), VLM_H) for i in (2, 4))
         if x2 - x1 < 4 or y2 - y1 < 4:
             return None
         # The detector boxes something even when the target is absent; a yes/no on the crop
         # rejects most of those (asked for "bed", it boxed a dumbbell).
-        answer = self.ask(img[max(y1, 0):y2, max(x1, 0):x2],
+        answer = self.ask(img[y1:y2, x1:x2],
                           f"Is this a {target}? Answer only yes or no.").strip().lower()
         self.get_logger().info(f"VLM box {[x1, y1, x2, y2]} for '{target}', verify: {answer}")
         return [x1, y1, x2, y2] if answer.startswith("yes") else None
@@ -336,16 +325,13 @@ def listen(node, stt):
     """Energy-gated recording from the default ALSA mic; each utterance goes to faster-whisper."""
     proc = subprocess.Popen(["arecord", "-q", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"],
                             stdout=subprocess.PIPE)
-    hint = "go to the " + ", ".join(k.replace("_", " ") for k in node.places) + ". stop."
+    hint = "go to the table. take me to the door. stop."
     noise, buf, quiet = None, [], 0
     while rclpy.ok():
         chunk = proc.stdout.read(960)  # 30 ms
         if not chunk:
             break
-        if node.speaking:
-            buf = []
-            continue
-        a = np.frombuffer(chunk, np.int16).astype(np.float32) / 32768.0
+        a =np.frombuffer(chunk, np.int16).astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(a * a)))
         if not buf:
             noise = rms if noise is None else 0.95 * noise + 0.05 * rms
