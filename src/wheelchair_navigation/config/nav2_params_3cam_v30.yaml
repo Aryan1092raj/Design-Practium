@@ -68,7 +68,11 @@
 #      session_20261107_000512); the OPEN_LOOP smoother still ramps at 1.2.
 #   v30 itself scores 3/5 in small_house both before and after this carry. The
 #   misses are SmacPlannerHybrid "exceeded maximum iterations" (18 before, 2
-#   after); downsampling the planner costmap did not fix them. Still open.
+#   after); downsampling the planner costmap did not fix them.
+#
+# CHANGES 2026-11-07 (Mode 3):
+#   1. Planner SmacPlannerHybrid -> SmacPlanner2D with downsampling, as in v29
+#      and v31, which pass 5/5 in small_house. FollowPathReverse is kept.
 ###############################################################################
 ###############################################################################
 # AMCL - RPLIDAR S3 OPTIMIZED
@@ -340,7 +344,7 @@ global_costmap:
       always_send_full_costmap: false
 
 ###############################################################################
-# PLANNER SERVER - SmacPlannerHybrid (v30; was SmacPlanner2D)
+# PLANNER SERVER - SmacPlanner2D (2026-11-07; v30 used SmacPlannerHybrid before)
 ###############################################################################
 planner_server:
   ros__parameters:
@@ -348,30 +352,23 @@ planner_server:
     use_sim_time: false
     planner_plugins: ["GridBased"]
 
-    # v30: SmacPlanner2D -> SmacPlannerHybrid (DUBIN, forward only). 2D plans
-    # for a point with no heading, so a path could start behind or beside the
-    # chair and force a pivot next to furniture, which the collision checks
-    # refuse. Hybrid-A* starts from the chair's heading and checks the full
-    # footprint along the path, so it plans forward curves instead.
+    # 2026-11-07: back to SmacPlanner2D (the v31 block). v30's SmacPlannerHybrid
+    # (DUBIN, 72 bins, full 0.02 m costmap) hit "exceeded maximum iterations"
+    # 15-18 times per run in small_house and scored 3/5, downsampled or not.
+    # The chair pivots in place (RPP rotate-to-heading), so a 2D path that
+    # starts beside the chair is turned into first, which the Hybrid planner
+    # was meant to avoid; FollowPathReverse stays as the BT recovery.
     GridBased:
-      plugin: "nav2_smac_planner::SmacPlannerHybrid"
+      plugin: "nav2_smac_planner::SmacPlanner2D"
       tolerance: 0.20
-      downsample_costmap: false
-      downsampling_factor: 1
+      downsample_costmap: true     # plan at 0.04 m: at the map's 0.02 m, 17 m routes hit max_iterations
+      downsampling_factor: 2
       allow_unknown: true
       max_iterations: 500000
       max_on_approach_iterations: 1000
       max_planning_time: 3.0
-      motion_model_for_search: "DUBIN"    # forward only; reversing stays a BT recovery
-      angle_quantization_bins: 72
-      minimum_turning_radius: 0.40        # m; the chair can pivot, 0.40 keeps curves gentle
-      analytic_expansion_ratio: 3.5
-      analytic_expansion_max_length: 3.0
-      non_straight_penalty: 1.2
-      cost_penalty: 2.0
-      lookup_table_size: 20.0
-      cache_obstacle_heuristic: false
-      smooth_path: true
+      cost_travel_multiplier: 1.0
+      use_final_approach_orientation: false
 
       smoother:
         max_iterations: 1000
