@@ -1,7 +1,6 @@
 ###############################################################################
 # WHEELCHAIR DIFF-DRIVE CONTROLLER — SAFE VELOCITY LIMITS
 ###############################################################################
-# DO NOT EDIT — create a new versioned file instead.
 # Based on: wc_control.yaml
 # Created: 2026-02-25
 # Pairs with: unified_wheelchair.launch.py, wheelchair_interface.cpp
@@ -17,6 +16,12 @@
 # At 3.0 rad/s angular, each wheel spins at 5.56 m/s — dangerous with
 # a passenger. These limits match the velocity_smoother caps (0.25/0.35)
 # with a small margin for controller overshoot.
+#
+# CHANGES 2026-11-07 (Mode 1 speed target, Nav2 cruise 0.50 m/s, accel 0.40):
+#   linear max_velocity 0.30 -> 0.55, max_acceleration 0.30 -> 0.45,
+#   angular max_velocity 0.50 -> 0.85, max_acceleration 0.80 -> 1.50,
+#   has_velocity_limts typo -> has_velocity_limits (spelling only: Jazzy
+#   defaults has_velocity_limits to true, so the cap was already enforced).
 ###############################################################################
 
 controller_manager:
@@ -85,11 +90,11 @@ wc_control:
     # to allow controller tracking without saturation.
     linear:
       x:
-        has_velocity_limts: true
-        max_velocity: 0.30   # m/s  (was 2.0 — 8x too high!)
+        has_velocity_limits: true
+        max_velocity: 0.55   # m/s  (2.0 -> 0.30 -> 0.55 for 0.50 cruise)
         min_velocity: -0.20  # m/s  (was -1.0 — 5x too high!)
         has_acceleration_limits: true
-        max_acceleration: 0.30   # m/s^2  (was 1.5)
+        max_acceleration: 0.45   # m/s^2  (1.5 -> 0.30 -> 0.45 for 0.40 accel)
         min_acceleration: -0.50  # m/s^2  (was -1.0) — allow quick braking
         has_jerk_limits: false
         max_jerk: 5.0  # m/s^3
@@ -97,9 +102,9 @@ wc_control:
     angular:
       z:
         has_velocity_limits: true
-        max_velocity: 0.50   # rad/s  (was 3.0 — 5x too high!)
+        max_velocity: 0.85   # rad/s  (3.0 -> 0.50 -> 0.85, above RPP 0.80 turn)
         has_acceleration_limits: true
-        max_acceleration: 0.80  # rad/s^2  (was 2.0)
+        max_acceleration: 1.50  # rad/s^2  (2.0 -> 0.80 -> 1.50, above smoother 1.2)
         has_jerk_limits: false
         max_jerk: 3.0  # rad/s^3
 

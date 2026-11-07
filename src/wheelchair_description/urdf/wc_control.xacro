@@ -32,8 +32,9 @@
                 <plugin>wheelchair_firmware/WheelchairInterface</plugin>
                 <param name="port">$(arg port)</param>
                 <!-- SAFETY: Hardware-level velocity limits (last software defense before Arduino) -->
-                <param name="max_linear_velocity">0.30</param>
-                <param name="max_angular_velocity">0.60</param>
+                <!-- 2026-11-07: 0.30 -> 0.55 and 0.60 -> 0.85 for Nav2's 0.50 m/s cruise and 0.80 rad/s turns -->
+                <param name="max_linear_velocity">0.55</param>
+                <param name="max_angular_velocity">0.85</param>
             </hardware>
         </xacro:unless>
         
