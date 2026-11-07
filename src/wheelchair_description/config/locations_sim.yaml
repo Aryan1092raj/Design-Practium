@@ -1,0 +1,10 @@
+# Named goals in the map frame of the Gazebo small_house world (maps/small_house_world.yaml).
+# yaw in radians, facing the furniture. Each spot is >= 1.3 m from obstacles (gym 1.4, balcony 1.8):
+# spots hugging furniture failed with "Start occupied" because of the chair's 0.9 x 0.7 m footprint.
+# desc says what is at the place, so voice_nav.py can resolve "I want to watch TV" to living room.
+# Used by: voice_nav.py --ros-args -p locations:=locations_sim.yaml
+bedroom: {x: -4.54, y: -0.14, yaw: 2.22, desc: "bed, nightstands and wardrobe; sleep, rest, lie down, change clothes"}
+kitchen: {x: 4.64, y: -1.98, yaw: 0.99, desc: "fridge, cooking bench and kitchen table; cook, eat, get food or a drink"}
+living_room: {x: 0.20, y: 1.48, yaw: -1.53, desc: "sofa, coffee table and TV; watch TV, sit and relax, meet guests"}
+gym: {x: 3.60, y: 1.00, yaw: 1.63, desc: "fitness equipment and dumbbells; exercise, work out, train"}
+balcony: {x: -0.60, y: 2.00, yaw: 1.55, desc: "balcony door and outdoor table; fresh air, go outside"}
