@@ -47,6 +47,16 @@ def wait(future):
     return future.result()
 
 
+def nav2_gone(client, handle, node):
+    """True if the action server vanished (Nav2 crashed): its result would never come, the
+    caller would wait forever, and the chair would ignore every command until a restart."""
+    if client.server_is_ready():
+        return False
+    node.get_logger().error("Nav2 action server vanished mid-goal")
+    handle.cancel_goal_async()  # in case it is only a discovery blip, the goal must not run on
+    return True
+
+
 class VoiceNav(Node):
     def __init__(self):
         super().__init__("voice_nav")
@@ -179,22 +189,36 @@ class VoiceNav(Node):
         self.goal_handle = handle
         if self.cancelled.is_set():
             handle.cancel_goal_async()
-        status = wait(handle.get_result_async()).status
+        result = handle.get_result_async()
+        while not result.done() and not nav2_gone(client, handle, self):
+            time.sleep(0.2)
         self.goal_handle = None
-        return status
+        return result.result().status if result.done() else None
+
+
+def mic_chunks(node):
+    """30 ms chunks from the default ALSA mic. arecord exits when the mic is unplugged or taken
+    by another program; it is restarted every 2 s, because a deaf chair can't hear "stop"."""
+    warned = False
+    while rclpy.ok():
+        proc = subprocess.Popen(["arecord", "-q", "-f", "S16_LE", "-r", "16000", "-c", "1",
+                                 "-t", "raw"], stdout=subprocess.PIPE)
+        while chunk := proc.stdout.read(960):
+            warned = False
+            yield chunk
+        proc.wait()
+        if not warned:
+            node.say("My microphone stopped working. I keep trying to reconnect it.")
+            warned = True
+        time.sleep(2.0)
 
 
 def listen(node, stt):
     """Energy-gated recording from the default ALSA mic; each utterance goes to faster-whisper."""
-    proc = subprocess.Popen(["arecord", "-q", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"],
-                            stdout=subprocess.PIPE)
     hint = "go to the " + ", ".join(k.replace("_", " ") for k in node.places) + ". stop."
     noise, buf, quiet = None, [], 0
-    while rclpy.ok():
-        chunk = proc.stdout.read(960)  # 30 ms
-        if not chunk:
-            break
-        a = np.frombuffer(chunk, np.int16).astype(np.float32) / 32768.0
+    for chunk in mic_chunks(node):
+        a =np.frombuffer(chunk, np.int16).astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(a * a)))
         if not buf:
             noise = rms if noise is None else 0.95 * noise + 0.05 * rms
