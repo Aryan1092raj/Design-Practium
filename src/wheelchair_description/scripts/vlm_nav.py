@@ -2,9 +2,12 @@
 """Voice + camera navigation with no saved places: "take me to the table" -> Nav2 goal.
 
 Listens on the laptop mic and turns speech into text with faster-whisper. The target is looked
-for in the front RGB-D camera with a VLM (Qwen2.5-VL 3B); if it is not in view, the chair turns
-in place 90 degrees at a time and looks again. The bounding box plus the aligned depth give the
-object's position in the map, and the goal is a free spot a short distance in front of it.
+for in the front RGB-D camera with a VLM (Qwen3-VL 4B Instruct); if it is not in view, the chair turns
+in place 90 degrees at a time and looks again. If the full turn misses it, the VLM gets all four
+views in one call and picks the one most likely to lead to the target (a doorway toward a
+kitchen when asked for a fridge); the chair drives a few metres that way and scans again, for up
+to 3 minutes. The bounding box plus the aligned depth give the object's position in the map, and
+the goal is a free spot within 1 m in front of it.
 Nav2 does all the driving; saying "stop" cancels the goal. Replies are printed and published on
 /voice/status (the real chair has no speaker).
 
@@ -40,14 +43,21 @@ from tf2_ros import Buffer, TransformListener
 
 from voice_nav import mic_chunks, nav2_gone
 
-VLM_URL = "http://127.0.0.1:8091/v1/chat/completions"  # scripts/vlm_server.sh (Qwen2.5-VL 3B)
-# Multiples of 28 and within the server's --image-min/max-tokens, so the image is not rescaled
-# and Qwen2.5-VL returns boxes in exactly these pixels.
+VLM_URL = "http://127.0.0.1:8091/v1/chat/completions"  # scripts/vlm_server.sh (Qwen3-VL 4B Instruct)
+# Image size sent to the VLM; about 150 image tokens. Qwen3-VL answers boxes in 0-1000 relative
+# coordinates, which vlm() scales to this size.
 VLM_W, VLM_H = 448, 336
 CAMERAS = ["camera"]  # front D455 only; the side cameras run depth-only to save USB bandwidth
-STANDOFF = (0.8, 1.1, 1.5)  # metres short of the object's near face; free() rejects inflated cells
+# Chair centre to the object's near face, nearest first. The chair's front is 0.45 m ahead of its
+# centre, so with Nav2's 0.15 m goal tolerance the front stops within 1 m of the object. 0.7-0.85
+# alone left no free spot in front of the sim sofa (coffee table, 0.65 m inflation).
+STANDOFF = (0.8, 1.0, 1.2, 1.3)
 LOOKS = 4  # front view plus three 90-degree turns in place
-MAX_RANGE = 4.0  # stereo depth error grows with range; farther objects are looked at again on arrival
+SEARCH_TIME = 180.0  # s; the search gives up after 3 minutes
+EXPLORE_STEP = 3.0  # m; how far each exploration drive goes at most
+BACKOFF = 0.7  # m; an exploration goal stops this far short of the first non-free cell
+MAX_RANGE = 4.0  # beyond this the depth is not trusted: drive along the bearing and look again
+APPROACHES = 4  # looks per command: the first, plus re-looks after driving toward a far sighting
 FREE_COST = 50  # global costmap cells below this count as free for a goal
 
 STOP = re.compile(r"\b(stop|halt|cancel)\b")
@@ -137,24 +147,36 @@ class VoiceNav(Node):
 
     # ---- one command, start to finish ---------------------------------------------------
     def run(self, target):
+        deadline = time.time() + SEARCH_TIME
         try:
-            for attempt in range(2):
-                found = self.find(target)
+            for attempt in range(APPROACHES):
+                # a re-look after driving toward an object already seen is not a search, so the
+                # 3-minute limit does not cut it short
+                found = self.find(target, deadline if attempt == 0 else time.time() + 60)
                 if self.cancelled.is_set():
                     return
                 if found is None:
-                    self.say(f"I can't find the {target}.")
+                    self.say(f"Sorry, the {target} was not found.")
                     return
-                goal, rng = found
-                if goal is None:
-                    self.say(f"I see the {target}, but I can't find a free spot next to it.")
+                goal, rng, bearing = found
+                if rng <= MAX_RANGE or attempt == APPROACHES - 1:
+                    if goal is None:
+                        self.say(f"I see the {target}, but I can't find a free spot next to it.")
+                    elif rng < STANDOFF[0] + 0.3:
+                        self.say(f"I am already next to the {target}.")
+                    else:
+                        self.drive(target, *goal, final=True, announce=attempt == 0)
                     return
-                if rng < STANDOFF[0] + 0.3:
-                    self.say(f"I am already next to the {target}.")
+                # Far sightings: in sim, objects seen at 5-7 m were placed metres away from where
+                # they are (a fridge outside the kitchen). Close in along the bearing, look again.
+                # straight along the bearing when the line is open, else let Nav2 route to the
+                # rough estimate (the fridge seen 12 m away from the bedroom, behind walls)
+                step = self.explore_goal(bearing) or goal
+                if step is None:
+                    self.say(f"I see the {target}, but I can't get closer to it.")
                     return
-                final = rng <= MAX_RANGE or attempt == 1
-                if not self.drive(target, *goal, final=final, announce=attempt == 0) or final:
-                    return
+                if not self.drive(target, *step, final=False, announce=attempt == 0):
+                    return  # drive() has said why
         finally:
             self.busy = False
 
@@ -194,7 +216,7 @@ class VoiceNav(Node):
             spin.time_allowance.sec = 30
             self.send(self.spin_client, spin)
 
-    def send(self, client, goal):
+    def send(self, client, goal, deadline=None):
         if not client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(f"action server {client._action_name} not available")
             return None
@@ -206,29 +228,119 @@ class VoiceNav(Node):
             handle.cancel_goal_async()
         result = handle.get_result_async()
         while not result.done() and not nav2_gone(client, handle, self):
+            if deadline and time.time() > deadline:  # search time is up: stop exploring
+                handle.cancel_goal_async()
+                deadline = None
             time.sleep(0.2)
         self.goal_handle = None
         return result.result().status if result.done() else None
 
     # ---- semantic search ----------------------------------------------------------------
-    def find(self, target):
-        """Look with the camera; if nothing, turn 90 degrees in place and look again."""
-        for turn in range(LOOKS):
-            for cam in CAMERAS:
-                hit = self.ground(cam, target)
+    def find(self, target, deadline):
+        """Scan 360 degrees; if the target is not seen, let the VLM pick the view most likely to
+        lead to it, drive a few metres that way and scan again, until the deadline."""
+        while time.time() < deadline and not self.cancelled.is_set():
+            views = []  # (rgb, map yaw) of each look, for the direction question
+            for turn in range(LOOKS):
+                for cam in CAMERAS:
+                    hit = self.ground(cam, target)
+                    if hit:
+                        self.get_logger().info(f"{target} seen by {cam} at {hit[1]:.1f} m")
+                        return hit
+                view = self.view()
+                if view:
+                    views.append(view)
+                if turn < LOOKS - 1:
+                    if self.cancelled.is_set() or time.time() > deadline:
+                        return None
+                    self.say(f"Turning to look for the {target}.")
+                    if not self.turn(math.pi / 2):
+                        return None  # Nav2 gone or spin rejected: rescanning the same view is pointless
+            if len(views) < LOOKS or time.time() > deadline or self.cancelled.is_set():
+                return None  # the VLM's photo numbers only mean a direction for a full scan
+            seen, go = self.choose(views, target)
+            if seen:  # the 4-view call saw it although the per-view boxes missed it: look again
+                self.turn_to(views[seen - 1][1])
+                hit = self.ground(CAMERAS[0], target)
                 if hit:
-                    self.get_logger().info(f"{target} seen by {cam} at {hit[1]:.1f} m")
                     return hit
-            if turn < LOOKS - 1 and not self.cancelled.is_set():
-                self.say(f"Turning to look for the {target}.")
-                spin = Spin.Goal()
-                spin.target_yaw = math.pi / 2
-                spin.time_allowance.sec = 30
-                if self.send(self.spin_client, spin) is None:
-                    return None  # Nav2 gone or spin rejected: rescanning the same view is pointless
-                time.sleep(1.0)  # fresh frames after the turn
-            if self.cancelled.is_set():
+            if not go:
+                self.get_logger().info(f"VLM sees no promising direction for '{target}'")
                 return None
+            # the chosen direction first; if it is blocked within a metre, the other views
+            goal = next((g for g in (self.explore_goal(v[1]) for v in
+                                     [views[go - 1]] + views[:go - 1] + views[go:]) if g), None)
+            if goal is None or time.time() > deadline:
+                return None
+            self.say(f"I don't see the {target} here. Looking further that way.")
+            g = NavigateToPose.Goal()
+            g.pose = PoseStamped()
+            g.pose.header.frame_id = "map"
+            g.pose.pose.position.x, g.pose.pose.position.y = goal[0], goal[1]
+            g.pose.pose.orientation.z, g.pose.pose.orientation.w = math.sin(goal[2] / 2), math.cos(goal[2] / 2)
+            if self.send(self.nav, g, deadline) != GoalStatus.STATUS_SUCCEEDED:
+                return None
+        return None
+
+    def turn(self, angle):
+        spin = Spin.Goal()
+        spin.target_yaw = angle
+        spin.time_allowance.sec = 30
+        ok = self.send(self.spin_client, spin) is not None
+        time.sleep(1.0)  # fresh frames after the turn
+        return ok
+
+    def turn_to(self, yaw):
+        pose = self.pose()
+        if pose:
+            self.turn(math.atan2(math.sin(yaw - pose[2]), math.cos(yaw - pose[2])))
+
+    def pose(self):
+        try:
+            t = self.tf.lookup_transform("map", "base_link", Time()).transform
+        except Exception as e:  # tf2 raises several unrelated exception types
+            self.get_logger().warn(f"tf: {e}")
+            return None
+        return t.translation.x, t.translation.y, 2 * math.atan2(t.rotation.z, t.rotation.w)
+
+    def view(self):
+        """The current front image and the chair's map yaw (spins never land on exactly 90)."""
+        f, pose = self.frames[CAMERAS[0]], self.pose()
+        if "rgb" not in f or pose is None:
+            return None
+        return cv2.resize(to_rgb(f["rgb"]), (VLM_W, VLM_H)), pose[2]
+
+    def choose(self, views, target):
+        """One VLM call with all views: is the target in one, and if not, which leads to it.
+        Returns 1-based view numbers, 0 for none."""
+        n = len(views)
+        text = self.ask([v[0] for v in views],
+                        f"These {n} photos were taken from one spot, turning left 90 degrees "
+                        f"between photos (photo 1 ahead, photo 2 left, photo 3 behind, photo 4 "
+                        f"right). I am looking for a {target}. Is a {target} in any photo? If "
+                        f"not, which photo most likely leads to a {target}, for example a "
+                        f"doorway or a room where a {target} is usually found? Reply JSON "
+                        f'{{"found": <photo number or 0>, "go": <photo number or 0>}}; '
+                        f"go is 0 if no photo looks promising.")
+        nums = [re.search(rf'"{k}"\s*:\s*(\d+)', text) for k in ("found", "go")]
+        seen, go = (int(m[1]) if m and 0 <= int(m[1]) <= n else 0 for m in nums)
+        self.get_logger().info(f"VLM 4-view answer for '{target}': {text.strip()!r}")
+        return seen, go
+
+    def explore_goal(self, yaw):
+        """A free spot up to EXPLORE_STEP metres along yaw, short of the first blocked cell, so
+        the chair heads into the open space the view shows instead of a room behind a wall."""
+        pose = self.pose()
+        if pose is None:
+            return None
+        for a in (yaw, yaw + 0.4, yaw - 0.4):
+            d = 0.0
+            while d < EXPLORE_STEP and self.free((pose[0] + (d + 0.05) * math.cos(a),
+                                                  pose[1] + (d + 0.05) * math.sin(a))):
+                d += 0.05
+            d = d - BACKOFF if d < EXPLORE_STEP else d
+            if d >= 1.0:
+                return pose[0] + d * math.cos(a), pose[1] + d * math.sin(a), a
         return None
 
     def ground(self, cam, target):
@@ -247,17 +359,6 @@ class VoiceNav(Node):
         h, w = depth.shape
         x1, y1, x2, y2 = (box[0] * w / VLM_W, box[1] * h / VLM_H,
                           box[2] * w / VLM_W, box[3] * h / VLM_H)
-        # central half of the box, nearest quartile: skips background seen around the object
-        u0, u1 = int(x1 + (x2 - x1) / 4), int(x2 - (x2 - x1) / 4) + 1
-        v0, v1 = int(y1 + (y2 - y1) / 4), int(y2 - (y2 - y1) / 4) + 1
-        patch = depth[max(v0, 0):min(v1, h), max(u0, 0):min(u1, w)]
-        d = patch[np.isfinite(patch) & (patch > 0.2)]
-        if d.size == 0:
-            return None
-        z = float(np.percentile(d, 25))
-        k = f["info"].k
-        u, v = (x1 + x2) / 2, (y1 + y2) / 2
-        point = np.array([(u - k[2]) / k[0] * z, (v - k[5]) / k[4] * z, z])  # optical frame
         try:
             r, t = to_matrix(self.tf.lookup_transform("map", f["depth"].header.frame_id, stamp,
                                                       Duration(seconds=0.5)))
@@ -265,18 +366,42 @@ class VoiceNav(Node):
         except Exception as e:  # tf2 raises several unrelated exception types
             self.get_logger().warn(f"tf: {e}")
             return None
+        # central half of the box, nearest quartile: skips background seen around the object
+        u0, u1 = max(int(x1 + (x2 - x1) / 4), 0), min(int(x2 - (x2 - x1) / 4) + 1, w)
+        v0, v1 = max(int(y1 + (y2 - y1) / 4), 0), min(int(y2 - (y2 - y1) / 4) + 1, h)
+        patch = depth[v0:v1, u0:u1]
+        vv, uu = np.mgrid[v0:v1, u0:u1]
+        ok = np.isfinite(patch) & (patch > 0.2)
+        if not ok.any():
+            return None
+        k = f["info"].k
+        zs = patch[ok]
+        # Drop the floor: the box of a low object (a sofa) includes the floor in front of it,
+        # which pulled the estimate 1.5 m short in sim. Floor points are the lowest in the patch.
+        height = (np.stack([(uu[ok] - k[2]) / k[0] * zs, (vv[ok] - k[5]) / k[4] * zs, zs], 1)
+                  @ r.T + t)[:, 2]
+        above = zs[height > height.min() + 0.10]
+        z = float(np.percentile(above if above.size else zs, 25))
+        u, v = (x1 + x2) / 2, (y1 + y2) / 2
+        point = np.array([(u - k[2]) / k[0] * z, (v - k[5]) / k[4] * z, z])  # optical frame
         obj = (r @ point + t)[:2]
         chair = np.array([chair.x, chair.y])
-        self.get_logger().info(f"{target}: map ({obj[0]:.2f}, {obj[1]:.2f})")
-        return self.standoff(obj, chair), float(np.hypot(*(obj - chair)))
+        self.get_logger().info(f"{target}: map ({obj[0]:.2f}, {obj[1]:.2f}), "
+                               f"chair at ({chair[0]:.2f}, {chair[1]:.2f})")
+        d = obj - chair
+        return self.standoff(obj, chair), float(np.hypot(*d)), math.atan2(d[1], d[0])
 
-    def ask(self, img, prompt):
-        jpg = base64.b64encode(cv2.imencode(".jpg", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))[1]).decode()
+    def ask(self, imgs, prompt):
+        """imgs: one RGB image or a list of them, sent in one message."""
+        imgs = imgs if isinstance(imgs, list) else [imgs]
+        jpgs = [base64.b64encode(cv2.imencode(".jpg", cv2.cvtColor(i, cv2.COLOR_RGB2BGR))[1]).decode()
+                for i in imgs]
         try:
             r = requests.post(VLM_URL, timeout=60, json={
                 "temperature": 0, "max_tokens": 120,
                 "messages": [{"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + jpg}},
+                    *({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + j}}
+                      for j in jpgs),
                     {"type": "text", "text": prompt}]}]})
             return r.json()["choices"][0]["message"]["content"]
         except (requests.RequestException, KeyError, IndexError, ValueError) as e:
@@ -286,20 +411,24 @@ class VoiceNav(Node):
     def vlm(self, rgb, target):
         img = cv2.resize(rgb, (VLM_W, VLM_H))
         text = self.ask(img, f"Is there a {target} in this image? If yes, give its bounding box as "
-                             f'JSON {{"bbox_2d": [x1, y1, x2, y2]}} in pixel coordinates. '
+                             f'JSON {{"bbox_2d": [x1, y1, x2, y2]}}. '
                              f'If there is no {target}, answer {{"bbox_2d": null}}.')
         num = r"\s*(\d+(?:\.\d+)?)\s*"
         m = re.search(rf"\[{num},{num},{num},{num}\]", text)
         if not m:
             return None
-        x1, x2 = (min(max(int(float(m[i])), 0), VLM_W) for i in (1, 3))
-        y1, y2 = (min(max(int(float(m[i])), 0), VLM_H) for i in (2, 4))
+        x1, x2 = (min(max(int(float(m[i]) * VLM_W / 1000), 0), VLM_W) for i in (1, 3))
+        y1, y2 = (min(max(int(float(m[i]) * VLM_H / 1000), 0), VLM_H) for i in (2, 4))
         if x2 - x1 < 4 or y2 - y1 < 4:
             return None
-        # The detector boxes something even when the target is absent; a yes/no on the crop
-        # rejects most of those (asked for "bed", it boxed a dumbbell).
-        answer = self.ask(img[y1:y2, x1:x2],
-                          f"Is this a {target}? Answer only yes or no.").strip().lower()
+        # The detector sometimes boxes something when the target is absent; a yes/no on the crop,
+        # padded by half the box on each side for context, rejects those. On saved sim views it
+        # passed no false box (a bare tight crop passed one and lost two real ones), but it also
+        # drops small objects such as a dumbbell, which a closer look after exploring can find.
+        pw, ph = (x2 - x1) // 2, (y2 - y1) // 2
+        crop = img[max(y1 - ph, 0):min(y2 + ph, VLM_H), max(x1 - pw, 0):min(x2 + pw, VLM_W)]
+        answer = self.ask(crop, f"Is there a {target} in the middle of this image? "
+                                f"Answer only yes or no.").strip().lower()
         self.get_logger().info(f"VLM box {[x1, y1, x2, y2]} for '{target}', verify: {answer}")
         return [x1, y1, x2, y2] if answer.startswith("yes") else None
 
