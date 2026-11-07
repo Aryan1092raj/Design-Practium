@@ -17,7 +17,6 @@ Text can also be injected for testing:
 import base64
 import math
 import re
-import subprocess
 import threading
 import time
 
@@ -38,6 +37,8 @@ from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
+
+from voice_nav import mic_chunks, nav2_gone
 
 VLM_URL = "http://127.0.0.1:8091/v1/chat/completions"  # scripts/vlm_server.sh (Qwen2.5-VL 3B)
 # Multiples of 28 and within the server's --image-min/max-tokens, so the image is not rescaled
@@ -203,9 +204,11 @@ class VoiceNav(Node):
         self.goal_handle = handle
         if self.cancelled.is_set():
             handle.cancel_goal_async()
-        status = wait(handle.get_result_async()).status
+        result = handle.get_result_async()
+        while not result.done() and not nav2_gone(client, handle, self):
+            time.sleep(0.2)
         self.goal_handle = None
-        return status
+        return result.result().status if result.done() else None
 
     # ---- semantic search ----------------------------------------------------------------
     def find(self, target):
@@ -323,14 +326,9 @@ class VoiceNav(Node):
 
 def listen(node, stt):
     """Energy-gated recording from the default ALSA mic; each utterance goes to faster-whisper."""
-    proc = subprocess.Popen(["arecord", "-q", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"],
-                            stdout=subprocess.PIPE)
     hint = "go to the table. take me to the door. stop."
     noise, buf, quiet = None, [], 0
-    while rclpy.ok():
-        chunk = proc.stdout.read(960)  # 30 ms
-        if not chunk:
-            break
+    for chunk in mic_chunks(node):
         a =np.frombuffer(chunk, np.int16).astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(a * a)))
         if not buf:
