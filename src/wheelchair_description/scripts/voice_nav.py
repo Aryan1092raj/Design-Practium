@@ -40,6 +40,7 @@ from go_to_location import load_locations
 SLM_MODEL = "qwen3:4b"  # 17/17 on purpose and name phrasing; 0.6b missed every purpose request
 SLM_URL = "http://127.0.0.1:11434/api/chat"
 STOP = re.compile(r"\b(stop|halt|cancel)\b")
+NOT = re.compile(r"\b(don'?t|do not|never|not|no)\b")  # "don't go to the kitchen": leave it to the SLM
 GO = re.compile(r"\b(?:go|take me|bring me|drive|move|head|navigate)\b.*?\b(?:to|towards?)\s+"
                 r"(?:the |a |an |my )?(?P<t>[a-z ]+)")
 
@@ -139,14 +140,14 @@ class VoiceNav(Node):
         # ("take me to the kitchen" -> none). The SLM only resolves what a name match can't,
         # such as "take me where I can cook" through each place's desc.
         match = None
-        if m or len(bare.split()) <= 3:
+        if (m or len(bare.split()) <= 3) and not NOT.search(t):
             match = process.extractOne(target, names, scorer=fuzz.WRatio, score_cutoff=85)
         if not match:
             slm = self.slm_place(t, names)  # None when the SLM is down
             if slm and slm != "none":
                 match = process.extractOne(slm, names, scorer=fuzz.WRatio, score_cutoff=85)
         if not match:
-            if m:
+            if m and not NOT.search(t):
                 self.say(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
             return  # otherwise ordinary speech near the chair is ignored
         if self.busy:
