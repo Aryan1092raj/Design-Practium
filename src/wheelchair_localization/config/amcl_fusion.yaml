@@ -107,8 +107,10 @@ amcl:
     # RECOVERY - QUICK RE-LOCALIZATION
     # =========================================================================
     # These values allow robot to quickly re-localize when lost
-    recovery_alpha_slow: 0.001            # Drift detection baseline
-    recovery_alpha_fast: 0.05             # Quick recovery when lost - WORKS!
+    # 2026-11-07: off. In the long look-alike corridor the random particles this injects
+    # teleported the pose 22 m (x -5.2 -> 17.3), and the chair drove to the wrong place.
+    recovery_alpha_slow: 0.0              # was 0.001
+    recovery_alpha_fast: 0.0              # was 0.05
 
     # =========================================================================
     # LOCALIZATION QUALITY

@@ -89,8 +89,9 @@ def generate_launch_description():
 
     # Hardware defaults
     is_sim_value = 'false'
-    port_value = '/dev/ttyACM0'
-    lidar_port_value = '/dev/ttyUSB0'
+    # Stable names: a USB hub reset renumbers ttyACM0/ttyUSB0 (seen 2026-11-06, both moved to *1).
+    port_value = '/dev/serial/by-id/usb-Arduino__www.arduino.cc__0042_9513731393235170B2F1-if00'
+    lidar_port_value = '/dev/rplidar'
 
     # Camera serials (from hardware - same as camera_fusion_test.launch.py)
     # NOTE: Front camera comes from wheelchair_sensors_launch (includes IMU processing)
@@ -265,7 +266,7 @@ def generate_launch_description():
                 'launch', 'rplidar_s3_launch.py'
             )
         ),
-        launch_arguments={'inverted': 'true'}.items(),
+        launch_arguments={'inverted': 'true', 'serial_port': LaunchConfiguration('lidar_port')}.items(),
         condition=UnlessCondition(is_sim)
     )
 

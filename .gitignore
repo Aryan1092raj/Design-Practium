@@ -24,6 +24,7 @@ __pycache__/
 data_logs/
 *.bag
 rosbag2_*/
+maps/session_*/rosbag*/
 
 # ============================================================================
 # Large binary assets (kept out of git history)

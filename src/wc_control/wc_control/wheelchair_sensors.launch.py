@@ -70,6 +70,11 @@ def generate_launch_description():
         default_value='true',
         description='If true, launch robot_state_publisher. Set false when included from another launch.',
     )
+    declare_front_color = DeclareLaunchArgument(
+        'front_color',
+        default_value='false',
+        description='Front D455 color 424x240x5 + depth aligned to it, needed by vlm_nav.py.',
+    )
 
     robot_description = ParameterValue(
         Command([
@@ -158,8 +163,11 @@ def generate_launch_description():
             'enable_sync': 'true',
             # FIX: Was 640x360@30Hz with color — caused OOM/freeze (50x more data than side cams)
             # Now matches side cameras: 424x240@6Hz depth-only. IMU unaffected (separate stream).
-            'enable_color': 'false',
-            'align_depth.enable': 'false',
+            # front_color:=true is for vlm_nav: low-rate color plus depth aligned to it.
+            'enable_color': LaunchConfiguration('front_color'),
+            # USB 2.1 color modes on this D455 are 424x240 RGB8 only (no 480x270).
+            'rgb_camera.color_profile': '424x240x5',
+            'align_depth.enable': LaunchConfiguration('front_color'),
             # D455 on a USB 2.1 link offers no 424x240 mode and falls back to 640x480x15;
             # 480x270x5 is the closest available load to the 424x240@6 design.
             'depth_module.depth_profile': '480x270x5',
@@ -292,6 +300,7 @@ def generate_launch_description():
         declare_rviz,
         declare_rviz_config,
         declare_standalone,
+        declare_front_color,
         robot_state_publisher,
         *joint_state_actions,
         *( [joint_state_publisher] if joint_state_publisher else [] ),

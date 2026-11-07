@@ -97,6 +97,30 @@ laser_filter:
         filter_window: 5           # Check 5 neighbors (integer is correct here)
 
     # ========================================================================
+    # FILTER 3: Self filter - drop the chair's own body (rear battery, anti-tip
+    # wheels, frame, rider). The front lidar sees them up to 0.61 m behind
+    # base_link, just outside the footprint; marked there, they blocked every
+    # in-place turn ("detected collision ahead") and never cleared, since the
+    # chair hides that area from the lidar.
+    # The box is given in the laser frame, so the filter needs no TF lookup
+    # (the TF race is what crashed the base_link box filter above).
+    # Laser sits at (+0.47, +0.12) in base_link, yawed 180 deg; the box is
+    # base_link x [-0.70, 0.45], y [-0.47, 0.47].
+    # ========================================================================
+    filter3:
+      name: self_box
+      type: laser_filters/LaserScanBoxFilter
+      params:
+        box_frame: laser
+        min_x: 0.02
+        max_x: 1.17
+        min_y: -0.35
+        max_y: 0.59
+        min_z: -0.5
+        max_z: 0.5
+        invert: false              # false = remove points INSIDE the box
+
+    # ========================================================================
     # FILTER 5: Intensity Filter (if available)
     # ========================================================================
     # RPLidar S3 provides intensity - low intensity often means noise
