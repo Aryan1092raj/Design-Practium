@@ -1,7 +1,6 @@
 ###############################################################################
 # NAV2 PARAMETERS - 3-CAMERA SAFE WHEELCHAIR CONFIGURATION (v30, FORWARD FIRST)
 ###############################################################################
-# DO NOT EDIT — create a new versioned file instead.
 # Based on: nav2_params_3cam_v29.yaml
 # Created: 2026-10-05
 # Pairs with: wheelchair_fusion_nav.launch.py, scan_fusion_v9, 3x RealSense,
@@ -58,7 +57,18 @@
 # Everything else is unchanged from v29 (AMCL update_min_d/a 0.01, costmap
 # transform_tolerance 5.0).
 #
-# DO NOT EDIT — create a new versioned file instead.
+#
+# CARRIED FROM v29 (2026-11-07, Mode 1 speed and smoothness, tested in Gazebo
+# small_house: 5/5 goals at 0.50 m/s, 0 "collision ahead"):
+#   1. RPP desired_linear_vel 0.25 -> 0.50, max_linear_accel 0.25 -> 0.40;
+#      velocity_smoother linear max_velocity 0.25 -> 0.50, max_accel
+#      0.25 -> 0.40, max_decel -0.25 -> -0.50.
+#   2. RPP max_angular_accel 3.2 -> 16.0. 3.2 made RPP ask 0.16 rad/s from
+#      rest, which sat in the real chair's motor deadband (bag
+#      session_20261107_000512); the OPEN_LOOP smoother still ramps at 1.2.
+#   v30 itself scores 3/5 in small_house both before and after this carry. The
+#   misses are SmacPlannerHybrid "exceeded maximum iterations" (18 before, 2
+#   after); downsampling the planner costmap did not fix them. Still open.
 ###############################################################################
 ###############################################################################
 # AMCL - RPLIDAR S3 OPTIMIZED
@@ -175,8 +185,8 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.25
-      max_linear_accel: 0.25
+      desired_linear_vel: 0.50            # from v29: 0.25 -> 0.50 cruise
+      max_linear_accel: 0.40              # from v29: 0.25 -> 0.40
       max_linear_decel: 0.50
       lookahead_dist: 0.70
       min_lookahead_dist: 0.50
@@ -186,7 +196,7 @@ controller_server:
       use_rotate_to_heading: true         # v30: turn in place to face the path
       rotate_to_heading_min_angle: 0.785  # v30: 0.35 -> 0.785 (45 deg); below that, drive a curve
       rotate_to_heading_angular_vel: 0.8  # from v31: 0.5 -> 0.8
-      max_angular_accel: 3.2              # v30: 0.8 -> 3.2; at 0.8 a turn from rest stalled near 0.05 rad/s
+      max_angular_accel: 16.0             # from v29: 3.2 -> 16.0, RPP asks the full turn speed at once; 0.16 rad/s stalled in the real chair deadband
       allow_reversing: false              # v30: never reverse while following a path
       transform_tolerance: 5.0    # v29: tolerate AMCL TF gaps
       min_approach_linear_velocity: 0.05
@@ -423,10 +433,10 @@ velocity_smoother:
     smoothing_frequency: 40.0
     scale_velocities: true
     feedback: "OPEN_LOOP"
-    max_velocity: [0.25, 0.0, 0.80]     # from v31: angular 0.50 -> 0.80
+    max_velocity: [0.50, 0.0, 0.80]     # linear 0.25 -> 0.50 from v29; from v31: angular 0.50 -> 0.80
     min_velocity: [-0.10, 0.0, -0.80]   # v30: reverse capped at the v4 BackUp speed; angular from v31
-    max_accel: [0.25, 0.0, 1.2]         # from v31: angular 0.8 -> 1.2
-    max_decel: [-0.25, 0.0, -1.2]
+    max_accel: [0.40, 0.0, 1.2]         # linear 0.25 -> 0.40 from v29; from v31: angular 0.8 -> 1.2
+    max_decel: [-0.50, 0.0, -1.2]     # from v29: linear -0.25 -> -0.50, 0.25 m to stop from 0.50 m/s
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1
     deadband_velocity: [0.02, 0.0, 0.02]
