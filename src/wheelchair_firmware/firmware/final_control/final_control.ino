@@ -55,6 +55,8 @@ unsigned long last_millis = 0;
 const unsigned long interval = 50;
 long lastEncoderL = 0;
 long lastEncoderR = 0;
+const unsigned long CMD_TIMEOUT_MS = 300; // Stop on lost serial commands; host repeats at 100 Hz (10 ms).
+unsigned long last_serial_cmd_time = 0;
 
 // CASTER SWIVEL PREVENTION
 bool pivot_mode = false;
@@ -114,6 +116,39 @@ double Kp_l = 7.2, Ki_l = 8.5, Kd_l = 0.15;
 double right_integral = 0.0, left_integral = 0.0;
 double right_prev_error = 0.0, left_prev_error = 0.0;
 double right_prev_meas = 0.0, left_prev_meas = 0.0;
+
+struct BoostState {
+  double prev_target = 0.0;
+  double prev_command = 0.0;
+  unsigned long start_time = 0;
+  bool started = false;
+  bool finished = false;
+};
+BoostState right_boost, left_boost;
+
+const unsigned long STALL_MS = 1500;
+const double STALL_OUTPUT = 40.0;
+bool stall_fault = false;
+bool right_stall_pending = false, left_stall_pending = false;
+unsigned long right_stall_start = 0, left_stall_start = 0;
+
+void stopMotion() {
+  right_wheel_cmd_vel = left_wheel_cmd_vel = 0.0;
+  right_wheel_target = left_wheel_target = 0.0;
+  right_integral = left_integral = 0.0;
+  right_wheel_cmd = left_wheel_cmd = 0.0;
+  pivot_mode = false;
+  prev_linear_velocity = 0.0;
+  right_boost = BoostState();
+  left_boost = BoostState();
+}
+
+void acceptStopCommand() {
+  // A deliberate zero command cancels stored pivot motion and is required to rearm a stall fault.
+  stopMotion();
+  stall_fault = false;
+  right_stall_pending = left_stall_pending = false;
+}
 
 // ================== CASTER SWIVEL PREVENTION ==================
 bool needsPivot(float current_linear, float prev_linear) {
@@ -216,6 +251,11 @@ void processPPMInput() {
     float angular_velocity = ((float)(1500 - ch1_filtered) / 500.0) * PPM_MAX_ANGULAR_VEL;
     angular_velocity = constrain(angular_velocity, -PPM_MAX_ANGULAR_VEL, PPM_MAX_ANGULAR_VEL);
 
+    if (linear_velocity == 0.0 && angular_velocity == 0.0) {
+      acceptStopCommand();
+      return;
+    }
+
     // Check if pivot is needed for direction change
     if (needsPivot(linear_velocity, prev_linear_velocity) && !pivot_mode) {
       startPivot(linear_velocity, angular_velocity);
@@ -296,6 +336,11 @@ void updateEncoderR(){
 
 // Forward kinematics: Convert cmd_vel to wheel velocities
 void cmdVelToWheels(double linear, double angular) {
+  if (linear == 0.0 && angular == 0.0) {
+    acceptStopCommand();
+    return;
+  }
+
   // Check if pivot is needed for direction change
   if (needsPivot(linear, prev_linear_velocity) && !pivot_mode) {
     startPivot(linear, angular);
@@ -319,20 +364,67 @@ void cmdVelToWheels(double linear, double angular) {
   prev_linear_velocity = linear;
 }
 
-// Manual PID with anti-windup
+// Feedforward so the PID does not have to wind up from zero. Measured 2026-11-07 on the chair:
+// pivots (wheel targets 0.65-1.5 rad/s) started 1.4-3 s late or never, because the PID alone
+// gave 4-10% output against caster scrub; forward 0.40 m/s (2.6 rad/s) settled near 18%.
+const double KFF = 7.0;              // % output per rad/s of target
+const double KS = 12.0;              // % static-friction kick until the wheel turns
+const double KS_BELOW_VEL = 0.3;     // rad/s: wheel counts as stopped below this
+const unsigned long BOOST_MAX_MS = 400;
+
+double feedforward(double target, double measurement, double command, BoostState &boost) {
+  if (abs(target) < 0.1) {           // matches the zero-command cutoff in loop()
+    boost = BoostState();
+    return 0.0;
+  }
+  unsigned long now = millis();
+  if (!boost.started) {
+    boost.started = true;
+    boost.start_time = now;
+  }
+  bool not_decreasing = abs(target) >= abs(boost.prev_target) &&
+                        abs(command) >= abs(target) && abs(command) >= abs(boost.prev_command);
+  // Limit the kick to one breakaway window; motion or deceleration ends it until a zero target.
+  if (!not_decreasing || abs(measurement) >= KS_BELOW_VEL || now - boost.start_time >= BOOST_MAX_MS) {
+    boost.finished = true;
+  }
+  double sign = target > 0 ? 1.0 : -1.0;
+  double ff = KFF * target;
+  if (!boost.finished && not_decreasing && abs(measurement) < KS_BELOW_VEL) ff += KS * sign;
+  boost.prev_target = target;
+  boost.prev_command = command;
+  return ff;
+}
+
+bool checkStall(double output, long delta_counts, unsigned long now,
+                unsigned long &start_time, bool &pending) {
+  // Sustained high output without encoder counts can mean a blocked wheel or a failed encoder.
+  if (abs(output) <= STALL_OUTPUT || delta_counts != 0) {
+    pending = false;
+    return false;
+  }
+  if (!pending) {
+    pending = true;
+    start_time = now;
+  }
+  return now - start_time > STALL_MS;
+}
+
+// Manual PID with anti-windup; ff is added before the clamp so anti-windup sees the total
 double computePID(double setpoint, double measurement, double &integral,
-                 double &prev_error, double &prev_meas, double Kp, double Ki, double Kd, double dt) {
+                 double &prev_error, double &prev_meas, double Kp, double Ki, double Kd, double dt,
+                 double ff) {
 
   double error = setpoint - measurement;
   integral += error * dt;
   integral = constrain(integral, -100.0/Ki, 100.0/Ki);
 
   double derivative = -(measurement - prev_meas) / dt;
-  double output = Kp * error + Ki * integral + Kd * derivative;
+  double output = Kp * error + Ki * integral + Kd * derivative + ff;
 
   double clamped_output = constrain(output, -100.0, 100.0);
   if (output != clamped_output) {
-    integral = (clamped_output - Kp * error - Kd * derivative) / Ki;
+    integral = (clamped_output - Kp * error - Kd * derivative - ff) / Ki;
   }
 
   prev_error = error;
@@ -393,11 +485,6 @@ void loop() {
   // Process PPM input first (highest priority)
   processPPMInput();
 
-  // Handle pivot mode updates for serial commands
-  if (!ppm_active && pivot_mode) {
-    updatePivot();
-  }
-
   // Only process serial commands if PPM is not active
   if (!ppm_active && Serial.available()) {
     char chr = Serial.read();
@@ -442,7 +529,7 @@ void loop() {
         }
       }
       else if(chr == ',') {
-        if(is_right_wheel_cmd) {
+        if(is_right_wheel_cmd && value_idx > 0) {
           double new_cmd = atof(value);
           if(!is_right_wheel_forward) new_cmd = -new_cmd;
 
@@ -452,8 +539,9 @@ void loop() {
           }
 
           right_wheel_cmd_vel = constrain(new_cmd, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL);
+          last_serial_cmd_time = millis();
         }
-        else if(is_left_wheel_cmd) {
+        else if(is_left_wheel_cmd && value_idx > 0) {
           double new_cmd = atof(value);
           if(!is_left_wheel_forward) new_cmd = -new_cmd;
 
@@ -463,7 +551,15 @@ void loop() {
           }
 
           left_wheel_cmd_vel = constrain(new_cmd, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL);
+          last_serial_cmd_time = millis();
         }
+        if ((is_right_wheel_cmd || is_left_wheel_cmd) && value_idx > 0) {
+          pivot_mode = false; // Direct wheel commands must supersede a stored pivot, including a two-wheel stop.
+          if (right_wheel_cmd_vel == 0.0 && left_wheel_cmd_vel == 0.0) {
+            acceptStopCommand();
+          }
+        }
+        is_right_wheel_cmd = is_left_wheel_cmd = false;
 
         // Reset value buffer
         value_idx = 0;
@@ -493,15 +589,17 @@ void loop() {
         value_idx = 0;
       }
       else if(chr == ',') {
-        if(is_linear_cmd) {
+        if(is_linear_cmd && value_idx > 0) {
           linear_x = constrain(atof(value), -MAX_LINEAR_VEL, MAX_LINEAR_VEL);
         }
-        else if(is_angular_cmd) {
+        else if(is_angular_cmd && value_idx > 0) {
           angular_z = constrain(atof(value), -10.0, 10.0); // Max 10 rad/s angular
 
           // Apply forward kinematics when we get angular command
           cmdVelToWheels(linear_x, angular_z);
+          last_serial_cmd_time = millis();
         }
+        is_linear_cmd = is_angular_cmd = false;
 
         // Reset value buffer
         value_idx = 0;
@@ -515,6 +613,16 @@ void loop() {
         }
       }
     }
+  }
+
+  // Clear motion before updating a pivot so an expired command cannot be restored.
+  if (!ppm_active && millis() - last_serial_cmd_time > CMD_TIMEOUT_MS) {
+    stopMotion();
+  }
+
+  // Handle pivot mode updates for serial commands
+  if (!ppm_active && pivot_mode) {
+    updatePivot();
   }
 
   // CONTROL LOOP
@@ -542,10 +650,12 @@ void loop() {
 
     // Manual PID with anti-windup
     right_wheel_cmd = computePID(right_wheel_target, right_wheel_meas_vel, right_integral,
-                                right_prev_error, right_prev_meas, Kp_r, Ki_r, Kd_r, deltaT);
+                                right_prev_error, right_prev_meas, Kp_r, Ki_r, Kd_r, deltaT,
+                                feedforward(right_wheel_target, right_wheel_meas_vel, right_wheel_cmd_vel, right_boost));
 
     left_wheel_cmd = computePID(left_wheel_target, left_wheel_meas_vel, left_integral,
-                               left_prev_error, left_prev_meas, Kp_l, Ki_l, Kd_l, deltaT);
+                               left_prev_error, left_prev_meas, Kp_l, Ki_l, Kd_l, deltaT,
+                               feedforward(left_wheel_target, left_wheel_meas_vel, left_wheel_cmd_vel, left_boost));
 
     // Handle zero commands
     if(abs(right_wheel_target) < 0.1) {
@@ -555,6 +665,21 @@ void loop() {
     if(abs(left_wheel_target) < 0.1) {
       left_wheel_cmd = 0.0;
       left_integral = 0.0;
+    }
+
+    bool right_stalled = checkStall(right_wheel_cmd, deltaCountsR, current_millis,
+                                   right_stall_start, right_stall_pending);
+    bool left_stalled = checkStall(left_wheel_cmd, deltaCountsL, current_millis,
+                                  left_stall_start, left_stall_pending);
+    if (!stall_fault && (right_stalled || left_stalled)) {
+      stall_fault = true;
+      Serial.println("Encoder stall fault - stopping both wheels; send zero to rearm");
+    }
+    if (stall_fault) {
+      right_wheel_cmd = left_wheel_cmd = 0.0;
+      right_wheel_target = left_wheel_target = 0.0;
+      right_integral = left_integral = 0.0;
+      pivot_mode = false;
     }
 
     // Update signs for feedback
