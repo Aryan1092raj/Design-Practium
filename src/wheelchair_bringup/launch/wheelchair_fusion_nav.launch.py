@@ -24,7 +24,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -77,8 +77,9 @@ def generate_launch_description():
         description='Full path to RViz config file'
     )
     declare_use_collision_monitor = DeclareLaunchArgument(
-        'use_collision_monitor', default_value='false',
-        description='Enable collision monitor safety layer'
+        'use_collision_monitor', default_value='true',
+        description='Collision monitor between the velocity smoother and the wheels; '
+                    'false feeds the wheels from /cmd_vel directly'
     )
     declare_use_imu_diagnostic = DeclareLaunchArgument(
         'use_imu_diagnostic', default_value='true',
@@ -113,6 +114,9 @@ def generate_launch_description():
             'map_name': map_name,
             'use_sim_time': use_sim_time,
             'rviz': 'false',
+            # The wheels obey the collision monitor's output when it is on.
+            'cmd_vel_in': PythonExpression([
+                "'", use_collision_monitor, "' == 'true' and '/cmd_vel_safe' or '/cmd_vel'"]),
         }.items()
     )
 
@@ -208,6 +212,21 @@ def generate_launch_description():
         parameters=[nav2_params, {'use_sim_time': use_sim_time}],
         condition=IfCondition(use_collision_monitor),  # RESTORED: v5 params wire cmd_vel→cmd_vel_safe, not inline
     )
+    # Own lifecycle manager: the monitor is a lifecycle node and stays inactive
+    # (publishing nothing, so the chair cannot move) until something activates it.
+    collision_monitor_lifecycle_manager = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_collision_monitor',
+        output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'autostart': autostart},
+            {'node_names': ['collision_monitor']},
+            {'bond_timeout': 4.0},
+        ],
+        condition=IfCondition(use_collision_monitor),
+    )
 
     topic_data_logger = Node(
         package='scripts',
@@ -288,7 +307,7 @@ def generate_launch_description():
 
     collision_monitor_startup = TimerAction(
         period=28.0,  # FIX: Start with Nav2 stack (was 32.0) — bridge depends on /cmd_vel_safe
-        actions=[collision_monitor],
+        actions=[collision_monitor, collision_monitor_lifecycle_manager],
     )
 
     # CSV data logger DISABLED — use rosbag + analysis scripts instead

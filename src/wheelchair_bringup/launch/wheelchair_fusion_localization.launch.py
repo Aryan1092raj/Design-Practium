@@ -176,6 +176,10 @@ def generate_launch_description():
         'use_zupt', default_value='true',
         description='Use ZUPT-Enhanced Odometry (encoder + gyro bias calibration) - BEST ACCURACY.'
     )
+    declare_cmd_vel_in = DeclareLaunchArgument(
+        'cmd_vel_in', default_value='/cmd_vel',
+        description='Topic the wheel bridge drives from. The nav launch sets /cmd_vel_safe when the collision monitor is on.'
+    )
 
     # Get launch configurations
     is_sim = LaunchConfiguration('is_sim')
@@ -657,7 +661,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
         remappings=[
-            ('cmd_vel_in', '/cmd_vel'),
+            ('cmd_vel_in', LaunchConfiguration('cmd_vel_in')),
             ('cmd_vel_out', '/wc_control/cmd_vel'),
         ],
     )
@@ -729,6 +733,7 @@ def generate_launch_description():
         declare_use_fused_scan,
         declare_use_custom_fusion,
         declare_use_zupt,
+        declare_cmd_vel_in,
 
         # USB permissions (hardware only)
         permission_setup,
