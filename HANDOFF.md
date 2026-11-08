@@ -13,7 +13,7 @@ Modes 1 and 2 pass in simulation with a measured "never touches anything" check.
 - Scripts: `mode1_sim_check.py` (stages to (1.2, 0) first because the spawn pose has furniture inside the turn radius), `mode2_sim_check.py` (plays the rider on `/voice/transcript`), `clearance_monitor.py` (footprint-to-obstacle distance from the scan and the map; `--scan-topic /scan_fused` on the real chair).
 
 ## Branches
-- `ros-nav` (Mode 1): has the polygon and sim-scan fix, `mode1_sim_check.py`, the v29 approach zone and `clearance_monitor.py` (cherry-picked). Its v29 matches the one tested.
+- `ros-nav` (Mode 1): has the polygon and sim-scan fix, `mode1_sim_check.py`, the v29 approach zone, `clearance_monitor.py`, and `594af58` (real-chair wheels driven from `/cmd_vel_safe`, collision monitor on by default), all cherry-picked. Before `594af58` the Mode 1 real-chair launch bypassed the collision monitor entirely. Its v29 matches the one tested.
 - `voice-slm-nav` (Mode 2, this checkout): same commits plus `mode2_sim_check.py`.
 - `voice-vlm-nav` (Mode 3): merged `voice-slm-nav` (`6d2ac3f`), keeping its own SmacPlanner2D v30 and HANDOFF, then `3cddd1a` carried the v31 SlowdownZone limit and the approach zone into v30.
 - Worktrees for `ros-nav` and `voice-vlm-nav` live in the old session's scratchpad. Run `git worktree prune` if `git checkout` of those branches complains.
@@ -39,6 +39,17 @@ Publish `/initialpose` at (0, 0), start `clearance_monitor.py --params <params f
 1. Upload the firmware and bench-test it with the wheels off the ground: command timeout (kill the ROS stack while a wheel turns), stop during a pivot, stall cutoff (hold a wheel).
 2. Real-chair runs for Modes 1 and 2, only when the user says so, with `clearance_monitor.py --scan-topic /scan_fused` running.
 3. Mode 3 exploration: not started.
+
+## Provoking runs (v29, 2026-11-08)
+- Spawn pose, no staging, goal behind: the chair stayed pinned (38 recoveries) and touched nothing. Closest approach 0.056 m (scan) and 0.044 m (map, AMCL pose), 3 near misses under 0.05 m, all during recovery Spin/BackUp next to the furniture.
+- Unmapped 0.4 x 0.4 m box spawned on the gym-to-kitchen route mid-drive: the chair went around it, 0 recoveries, max 0.34 m/s.
+- Collision monitor actions over both runs: STOP 6, SLOWDOWN 10, APPROACH 0. The approach zone is active (`/polygon_approach` publishes) but the StopZone and the 30% SlowdownZone were always more restrictive.
+- Claim this supports: in sim the chair never touched anything its sensors could see. The worst case margin is about 4–6 cm, when boxed in.
+
+## Real-chair risks to check first
+- `/scan_fused` had ~105 points beside the chair and one return within 30 cm of the front-right corner. If those are chair parts, the approach zone and StopZone will block every in-place turn. With the chair stationary, run `clearance_monitor.py --scan-topic /scan_fused` and read its startup list of closest points; exclude real chair parts with `--ignore-box` and fix the scan filter, not the zones.
+- Firmware stall cutoff: a normal low-speed start with a rider on carpet must not hold more than 40% output for 1.5 s with no encoder counts, or the latch brings back stop-and-go. Bench-test it.
+- The 300 ms serial timeout stops the chair if the controller manager stalls for 30 cycles (heavy CPU or GPU load from Whisper or the VLM).
 
 ## Not covered by the clearance check
 - The sim lidar sees -99° to 160°, so the rear-right sector is blind to the scan check. The map check covers static walls there, not moving obstacles.
