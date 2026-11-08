@@ -49,6 +49,16 @@ Each mode is done when it passes in Gazebo `small_house` first and then on the r
 
 The FlySky remote is off, so there is no stick override. Keep the power cut within reach on every real-chair run. Never raise speed or accel limits on the real chair without a test in simulation first.
 
+## Real-chair hardware checks
+
+Run these before every real-chair launch. Don't send a goal until all of them pass.
+
+- **Cameras:** only one cable carries USB 3, and no others can be bought. That cable goes to the front D455 (serial 337122300107), because it has the only IMU and feeds Mode 3's RGB. Plug it straight into a laptop port, not into the hub with the lidar and the Arduino. Check with `rs-enumerate-devices | rg "Serial Number|Usb Type Descriptor"`: the front camera must show 3.x. The left D455 (146222253403) and the D435i (207522077542) run on USB 2.1, where the D435i rejects the `424x240x5` colour profile and falls back to 1280x720x30.
+- **Lidar:** if `/scan` stops while `rplidar_node` is still running, or the node logs `RPLidar health status : 2` ("internal error"), unplug the lidar for 10 s and plug it back in. That cleared it on 2026-11-08.
+- **Scan rate:** `/scan` must hold about 10 Hz and `/scan_fused` at least 8 Hz for 2 minutes with the chair still. A slow `/scan_fused` makes the collision monitor drop it as stale ("timestamps differ ... Ignoring the source"), which causes stop-and-go and "collision ahead". Measure with an `rclpy` counter using `qos_profile_sensor_data`. `ros2 topic hz` showed nothing for the large scan topics from an agent shell.
+- **Start pose:** start in open floor (the map origin (0, 0) has 0.70 m clearance) and set **2D Pose Estimate** in RViz so the scan sits on the walls. A start next to a wall gives "Start occupied".
+- **Launch:** use `record_bag:=false` until the bag path `/opt/nvidia/rosbags` exists.
+
 ## Working notes
 
 - Handoff state lives in `HANDOFF.md`. Read it first.
