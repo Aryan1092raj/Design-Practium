@@ -20,14 +20,17 @@ ros2 launch wheelchair_description gazebo_sim.launch.py world_name:=small_house 
 ```
 Then publish `/initialpose` at (0, 0) and run `mode1_sim_check.py`. The sim default BT (`wheelchair_robust_nav_v5.xml`) calls `FollowPathReverse`, which only v30 defines, so v29 and v31 need the v3 BT that the real chair uses.
 
+- Mode 2 passed in Gazebo small_house with v31 (including the user's uncommitted SlowdownZone change), the collision monitor on, and the v3 BT: 5/5 purpose-only phrases ("take me somewhere I can lie down", "I want to cook something", "I'd like to watch some TV", "I need to work out", "I want some fresh air") reached the right place in 18–31 s, and "take me to the garage" started no goal. Driver: `src/wheelchair_description/scripts/mode2_sim_check.py`, which publishes on `/voice/transcript` and reads `/voice/status`; `voice_nav.py` runs from `.venv-voice` with Ollama `qwen3:4b`.
+
 ## Left
-1. Commit the work (nothing is committed): v29/v30 polygon fix, `nav2_sim.yaml`, `mode1_sim_check.py`, CMakeLists.txt, this file. The user's own uncommitted changes (firmware, `voice_nav.py`, v31 SlowdownZone) need their review first.
-2. Carry the v29 speed changes to v30 (v30 still cruises at 0.25 m/s), and decide whether v31's SlowdownZone `limit` change goes to v30.
-3. Mode 2 sim run: 5 voice places with `locations_sim.yaml`, v31 params, v3 BT.
+1. Branch routing. Each mode has its own branch: `ros-nav` (v29), `voice-slm-nav` (v31, this one), `voice-vlm-nav` (v30). The v29/v30 polygon fix and the `nav2_sim.yaml` scan fix were committed here (`c682274`); `ros-nav` and `voice-vlm-nav` still lack them. `voice-vlm-nav` already moved v30 to SmacPlanner2D (`9322d36`), so this branch's v30 is a stale copy.
+2. The v30 carry (speed values and v31 SlowdownZone) sits uncommitted in this tree against the stale v30. A copy is in the session scratchpad as `v30_carry.patch`. It belongs on `voice-vlm-nav`.
+3. Firmware safety (see below) before any real-chair run.
 4. Mode 3 exploration: not started.
 
 ## Open review findings (uncommitted user changes)
-- `final_control.ino:333`: static-friction boost can re-engage below 0.3 rad/s, including after a stop command. Not yet verified by the main session. Check before any real-chair run.
+- `final_control.ino`, verified in code: there is no serial command timeout (only `PPM_TIMEOUT` for the RC input), so if ROS or the laptop dies the chair keeps the last command. A serial stop does not clear `pivot_mode`, so `updatePivot()` restores the stored motion command 300 ms after a stop. Both predate the user's diff.
+- `final_control.ino:333` (user's diff, from the codex report): the static-friction boost applies whenever the target is nonzero and measured speed is below 0.3 rad/s, including while decelerating; with no encoder counts and a held nonzero target the output can reach 100% PWM. Full trace and proposed fixes: `fw_review.md` in the session scratchpad.
 - v31 SlowdownZone narrowed to ±0.45 m with a 0.15 m/s / 0.8 rad/s limit: side obstacles no longer slow in-place turns (StopZone still covers ±0.42 m).
 - `voice_nav.py:258`: Whisper hard-coded to CUDA float16 with no CPU fallback.
 
