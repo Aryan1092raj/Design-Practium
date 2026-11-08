@@ -255,7 +255,7 @@ def listen(node, stt):
 def main():
     rclpy.init()
     node = VoiceNav()
-    stt = WhisperModel("base.en", device="cpu", compute_type="int8")
+    stt = WhisperModel("base.en", device="cuda", compute_type="float16")  # CPU int8 took seconds per command
     threading.Thread(target=listen, args=(node, stt), daemon=True).start()
     node.say("Voice navigation ready.")
     try:
