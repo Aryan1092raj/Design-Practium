@@ -41,6 +41,9 @@
 #      RPP asks the full 0.8 rad/s at once; the OPEN_LOOP velocity smoother
 #      still ramps the real command at 1.2 rad/s^2. Side effect: the rotation
 #      collision check now projects ~0.8 rad ahead instead of ~0.16 rad.
+#   3. collision_monitor StopZone/SlowdownZone points: flat double list -> string
+#      of [x, y] pairs, same polygons. Jazzy rejected the old type and bringup
+#      aborted (2026-11-08 sim).
 ###############################################################################
 ###############################################################################
 # AMCL - RPLIDAR S3 OPTIMIZED
@@ -406,14 +409,14 @@ collision_monitor:
     polygons: ["StopZone", "SlowdownZone"]
     StopZone:
       type: "polygon"
-      points: [0.55, 0.42, 0.55, -0.42, -0.55, -0.42, -0.55, 0.42]
+      points: "[[0.55, 0.42], [0.55, -0.42], [-0.55, -0.42], [-0.55, 0.42]]"  # Jazzy wants a string of [x, y] pairs
       action_type: "stop"
       max_points: 3
       visualize: true
       polygon_pub_topic: "polygon_stop"
     SlowdownZone:
       type: "polygon"
-      points: [0.95, 0.82, 0.95, -0.82, -0.95, -0.82, -0.95, 0.82]
+      points: "[[0.95, 0.82], [0.95, -0.82], [-0.95, -0.82], [-0.95, 0.82]]"  # Jazzy wants a string of [x, y] pairs
       action_type: "slowdown"
       max_points: 3
       slowdown_ratio: 0.3
