@@ -8,7 +8,7 @@
 # Only three things differ between the robot and Gazebo:
 #   1. time - Gazebo publishes /clock, so every node needs use_sim_time: true.
 #      The real config hardcodes false everywhere (wall clock, no /clock).
-#   2. the laser topic - on the robot the costmaps and AMCL read /scan_fused,
+#   2. the laser topic - on the robot the costmaps, AMCL and the collision monitor read /scan_fused,
 #      which is produced by the 3x RealSense fusion pipeline. That pipeline does
 #      not run in Gazebo, so the raw bridged /scan is used instead.
 #   3. footprint - the robot is 0.45 x 0.35 m, but the Gazebo collision box of
@@ -82,3 +82,5 @@ waypoint_follower:
 collision_monitor:
   ros__parameters:
     use_sim_time: true
+    scan:
+      topic: /scan
