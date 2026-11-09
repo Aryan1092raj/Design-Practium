@@ -2,7 +2,35 @@
 
 This file lists the problems that stopped or degraded real-chair runs and how each one was fixed. Newest first. Each entry gives the symptom, the cause, the fix and how it was checked.
 
-## 2026-11-09: filtered odometry endpoint runs ahead; steering alternates (source fixes, live test pending)
+## 2026-11-09: left wheel encoder overcounts about 1.54× (OPEN, hardware)
+
+**Symptom.** On a 4 m straight goal the chair curves left until it stops at a wall, and it moves again only after it is pushed away. The tape reads about 3 m while odometry reads about 4 m. After every drive the lidar scan sits rotated off the map walls, and 2D Pose Estimate has to be set again. Earlier drives showed the same fault as a "37% / 32% odometry overcount" and as a left-right zigzag.
+
+**Cause.** The left encoder counts about 1.54× the right on straight drives. Per-wheel distance integrated from `WheelchairInterface` log lines (`python3 scripts/encoder_ratio.py <log> <t0> <t1>`):
+
+| Drive | Right | Left | L/R | Encoder yaw |
+|---|---|---|---|---|
+| 4 m test, tape 3.045 m | 3.41 m | 5.23 m | 1.53 | −184° |
+| Optical lab voice goal | 11.77 m | 18.38 m | 1.56 | −671° |
+| 4 m test, tape about 3 m | 3.20 m | 4.92 m | 1.54 | −175° |
+
+The right encoder roughly matches the tape. Both wheels use `CPR = 10000` in `final_control.ino:43`. The firmware speed loop trusts the inflated left reading and slows the left motor, so the chair veers left. Odometry averages the two wheels, which overcounts distance, and it reads a large false right turn, which ruins the heading. The user suspects the left encoder is loose.
+
+**Fix (pending).** Re-seat or tighten the left encoder and check its cable. Then bench-test with the wheels lifted: one hand-turned revolution of each wheel should read 2π rad. If the left wheel reads a steady 1.54 × 2π instead, set a per-wheel CPR in the firmware.
+
+**Check (pending).** Run `scripts/straight_test.py 4.0` twice. Pass: the chair drives straight, `encoder_ratio.py` shows L/R ≈ 1.0, and filtered distance is within 2% of the tape.
+
+## 2026-11-09: motors not powered gave an encoder stall fault
+
+**Symptom.** Nav2 planned a path, but the chair didn't move. `cmd_vel` reached `/wc_control/cmd_vel` at 0.4 m/s, then `Failed to make progress`, then spin and backup recoveries failed.
+
+**Cause.** The motor supply was off while the laptop side was up. The firmware drove above 40 output for 1.5 s with zero encoder counts and cut both wheels: `Arduino status: Encoder stall fault - stopping both wheels; send zero to rearm` (`final_control.ino:129`).
+
+**Fix.** Power the motors before sending goals. The next goal sends zero first, which rearms the fault.
+
+**Check.** After the motors were powered, the next voice goal drove with no stall fault.
+
+## 2026-11-09: filtered odometry endpoint runs ahead; steering alternates (source fixes deployed; validation blocked by the left encoder)
 
 **Symptom.** A 4 m Nav2 goal stopped after 3.045 m on the tape. `/wc_control/odom` endpoint moved 3.092 m; `/odometry/filtered` moved 4.021 m. These are endpoint displacements, not integrated path lengths.
 
@@ -12,7 +40,9 @@ This file lists the problems that stopped or degraded real-chair runs and how ea
 
 **Offline check.** `python3 src/wheelchair_zupt/test/odom_selfcheck.py` passed. A synthetic 3.092 m straight drive with deliberately inconsistent twist yields 3.092 m (0% source error); a 4 m curved path with a 3.365884 m endpoint stays at that endpoint, whereas the original slip equation gives 3.998334 m. Callback freshness, reverse/slow motion, yaw wrap, drops/gaps and the actual C++ parser regex also pass. Full evidence and outputs: `/tmp/claude-1000/odomfix-report.md`.
 
-**Pending.** Nothing was built, installed or restarted; the live stack retains the old behavior. After separately authorized deployment, compare both odom endpoints and path lengths on repeated controlled runs (<2% source disagreement), check physical heading/gyro signs and scale, confirm TF frame-pair authorities, and observe steering and AMCL corrections. Wheel endpoint agreement alone does not validate physical yaw or eliminate all zigzag causes.
+**Live result (2026-11-09 23:55).** The fix was built and launched, and `gyro_blend_alpha` read back 1.0. The straight test then showed that the larger fault is the left encoder (entry above). Its wheel yaw is wrong, so using wheel heading only (alpha 1.0) made the chair veer left. Revisit the alpha choice once the encoder is fixed.
+
+**Earlier note.** At first nothing was built, installed or restarted. After separately authorized deployment, compare both odom endpoints and path lengths on repeated controlled runs (<2% source disagreement), check physical heading/gyro signs and scale, confirm TF frame-pair authorities, and observe steering and AMCL corrections. Wheel endpoint agreement alone does not validate physical yaw or eliminate all zigzag causes.
 
 ## 2026-11-09: `/scan_fused` too slow (4.6 Hz, needs 8 Hz or more)
 
@@ -50,3 +80,5 @@ The fusion rule did not change: a camera reading replaces the lidar reading only
 **Fix.** Unplug the lidar for 10 s and plug it back in, then relaunch. The launch reaches the lidar through `/dev/rplidar`, which follows it to whichever `ttyUSB` it gets.
 
 **Check.** After the power cycle, `/scan` came back at about 10 Hz.
+
+**Seen again 2026-11-09 23:50.** At launch the node logged `Error, RPLidar internal error detected. Please reboot the device to retry.` and `rplidar_node` exited with code 255. With no scan, AMCL published no `map` TF, so `lifecycle_manager_navigation` failed to bring up its nodes. After a power cycle, the log showed `RPLidar health status : OK.` and all of Nav2 came up.
