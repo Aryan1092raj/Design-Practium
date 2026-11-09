@@ -28,6 +28,7 @@ from action_msgs.msg import GoalStatus
 from faster_whisper import WhisperModel
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose, Spin
+from nav_msgs.msg import Path
 from rapidfuzz import fuzz, process
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -67,12 +68,15 @@ class VoiceNav(Node):
         self.places = load_locations(self.declare_parameter("locations", "locations.yaml").value)
         self.create_subscription(String, "/voice/transcript", lambda m: self.on_text(m.data), 10)
         self.status = self.create_publisher(String, "/voice/status", 10)
+        self.plan = self.create_publisher(Path, "/plan", 10)  # Nav2 leaves its last path in RViz
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.spin_client = ActionClient(self, Spin, "spin")
         self.goal_handle = None
         self.busy = False
+        self.next = None  # (name, place) said while moving; run() starts it after the cancel
+        self.lock = threading.Lock()  # busy and next change together across threads
         self.cancelled = threading.Event()
 
     def say(self, text):
@@ -122,9 +126,13 @@ class VoiceNav(Node):
     def on_text(self, text):
         t = text.lower()
         if STOP.search(t):
-            self.cancelled.set()
-            if self.goal_handle:
-                self.goal_handle.cancel_goal_async()
+            with self.lock:
+                self.next = None
+                if not self.busy:
+                    self.clear_plan()
+                    self.say("Nothing to stop.")
+                    return
+                self.cancel()
             self.say("Stopping.")
             return
         if not self.places:
@@ -150,13 +158,27 @@ class VoiceNav(Node):
             if m and not NOT.search(t):
                 self.say(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
             return  # otherwise ordinary speech near the chair is ignored
-        if self.busy:
-            self.say("I am already moving. Say stop first.")
-            return
-        self.busy = True
-        self.cancelled.clear()
+        with self.lock:
+            if self.busy:  # a new place replaces the current goal
+                self.next = (match[0], self.places[match[2]])
+                self.cancel()
+                self.say(f"Changing to the {match[0]}.")
+                return
+            self.busy = True
+            self.cancelled.clear()
         threading.Thread(target=self.run, args=(match[0], self.places[match[2]]),
                          daemon=True).start()
+
+    def cancel(self):
+        self.cancelled.set()
+        if self.goal_handle:
+            self.goal_handle.cancel_goal_async()
+
+    def clear_plan(self):
+        path = Path()
+        path.header.frame_id = "map"
+        path.header.stamp = self.get_clock().now().to_msg()
+        self.plan.publish(path)
 
     def run(self, name, p):
         try:
@@ -176,7 +198,14 @@ class VoiceNav(Node):
                 self.say(f"Arrived at the {name}." if ok else
                          f"I could not reach the {name}. I may be stuck. Please help me.")
         finally:
-            self.busy = False
+            with self.lock:
+                nxt, self.next = self.next, None
+                if nxt:
+                    self.cancelled.clear()
+                    threading.Thread(target=self.run, args=nxt, daemon=True).start()
+                else:
+                    self.busy = False
+                    self.clear_plan()
 
     def face(self, yaw):
         """Nav2 ignores the goal heading (yaw_goal_tolerance 6.28 in the chair's params), so turn
