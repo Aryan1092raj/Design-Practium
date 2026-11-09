@@ -54,6 +54,11 @@
 #   of [x, y] pairs, same polygons. Jazzy rejected the old type and bringup
 #   aborted (2026-11-08 sim).
 #
+# CARRIED FROM v31 (2026-11-08):
+#   Speed 0.25 -> 0.40: RPP desired_linear_vel and velocity_smoother linear
+#   max_velocity, the cruise speed set for every mode. Accel stays 0.25 here;
+#   the reverse controller (FollowPathReverse, 0.10) is unchanged.
+#
 # DO NOT EDIT — create a new versioned file instead.
 ###############################################################################
 ###############################################################################
@@ -171,7 +176,7 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.25
+      desired_linear_vel: 0.40            # 0.25 -> 0.40 (2026-11-08)
       max_linear_accel: 0.25
       max_linear_decel: 0.50
       lookahead_dist: 0.70
@@ -419,7 +424,7 @@ velocity_smoother:
     smoothing_frequency: 40.0
     scale_velocities: true
     feedback: "OPEN_LOOP"
-    max_velocity: [0.25, 0.0, 0.50]
+    max_velocity: [0.40, 0.0, 0.50]   # linear 0.25 -> 0.40 (2026-11-08)
     min_velocity: [-0.10, 0.0, -0.50]   # v30: reverse capped at the v4 BackUp speed
     max_accel: [0.25, 0.0, 0.8]
     max_decel: [-0.25, 0.0, -0.8]
