@@ -17,8 +17,9 @@ Publishes:
 Algorithm:
     1. During stops: Estimate gyro bias
     2. During motion: Use bias-corrected gyro for slip detection
-    3. When slip detected: Trust gyro for heading
-    4. Otherwise: Trust encoders (standard dead reckoning)
+    3. Use wheel pose increments for distance, never re-integrate averaged twist
+    4. Wheel heading is authoritative by default; gyro bias/slip are diagnostics
+       until gyro/encoder agreement is validated (optional fixed heading blend)
 """
 
 import rclpy
@@ -26,6 +27,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 import numpy as np
+import math
 import threading
 from typing import Optional
 
@@ -48,10 +50,10 @@ def quaternion_from_yaw(yaw: float) -> Quaternion:
 
 class ZUPTOdometry:
     """
-    ZUPT-Enhanced Dead Reckoning - THE WINNING ALGORITHM
+    Wheel displacement with gyro heading fusion and stationary bias estimation.
 
-    Key insight: Use stops to estimate gyro bias, then use
-    bias-corrected gyro ONLY during slip events.
+    Wheel pose increments set the distance. Slip detection reports disagreement
+    without changing the configured heading blend.
     """
 
     def __init__(self,
@@ -62,7 +64,7 @@ class ZUPTOdometry:
                  stationary_omega_threshold: float = 0.05,
                  bias_adaptation_rate: float = 0.01,
                  slip_threshold: float = 0.08,
-                 gyro_blend_alpha: float = 0.98):
+                 gyro_blend_alpha: float = 1.0):
 
         self.wheel_radius_L = wheel_radius_L
         self.wheel_radius_R = wheel_radius_R
@@ -93,6 +95,8 @@ class ZUPTOdometry:
         self.stationary_count = 0
         self.slip_count = 0
         self.total_count = 0
+        self._last_wheel_pose = None
+        self._last_stamp_ns = None
 
     def reset(self, x: float = 0.0, y: float = 0.0, theta: float = 0.0):
         """Reset to given pose."""
@@ -107,40 +111,66 @@ class ZUPTOdometry:
         self.stationary_count = 0
         self.slip_count = 0
         self.total_count = 0
+        self._last_wheel_pose = None
+        self._last_stamp_ns = None
 
-    def update(self, v_odom: float, omega_odom: float, gyro_z: float, dt: float):
+    def update(self, wheel_x: float, wheel_y: float, wheel_yaw: float,
+               gyro_z: Optional[float], stamp_ns: int) -> bool:
         """
-        Update odometry with new readings.
+        Consume an absolute wheel pose, preserving each measured displacement.
 
-        Args:
-            v_odom: Linear velocity from wheel odometry (m/s)
-            omega_odom: Angular velocity from wheel odometry (rad/s)
-            gyro_z: Gyroscope z-axis reading (rad/s)
-            dt: Time step (seconds)
+        diff_drive's twist is a rolling mean at the controller update cadence;
+        it is not the displacement over this odom publication's stamp interval.
+        Re-integrating it can change the distance. Rotate the wheel pose chord
+        into the fused heading instead. Integer stamps avoid epoch precision
+        loss; duplicate/out-of-order samples must not change the baseline.
+        The first sample anchors the source without copying its pose offset.
         """
+        if not all(math.isfinite(v) for v in (wheel_x, wheel_y, wheel_yaw)):
+            return False
+        if self._last_stamp_ns is not None and stamp_ns <= self._last_stamp_ns:
+            return False
+        if self._last_wheel_pose is None:
+            self._last_wheel_pose = (wheel_x, wheel_y, wheel_yaw)
+            self._last_stamp_ns = stamp_ns
+            return False
+
+        dt = (stamp_ns - self._last_stamp_ns) * 1e-9
+        prev_x, prev_y, prev_yaw = self._last_wheel_pose
+        dx, dy = wheel_x - prev_x, wheel_y - prev_y
+        wheel_dyaw = math.atan2(math.sin(wheel_yaw - prev_yaw),
+                               math.cos(wheel_yaw - prev_yaw))
+        wheel_mid_yaw = prev_yaw + 0.5 * wheel_dyaw
+        v_odom = (dx * math.cos(wheel_mid_yaw) +
+                  dy * math.sin(wheel_mid_yaw)) / dt
+        omega_odom = wheel_dyaw / dt
+        # A latest gyro sample cannot represent a long missing interval.
+        gyro_valid = (gyro_z is not None and math.isfinite(gyro_z) and dt <= 0.5)
         self.total_count += 1
 
         # === Stationary detection ===
         self.is_stationary = (
             abs(v_odom) < self.stationary_threshold and
-            abs(omega_odom) < self.stationary_omega_threshold
+            abs(omega_odom) < self.stationary_omega_threshold and
+            math.hypot(dx, dy) < 1e-12 and abs(wheel_dyaw) < 1e-12
         )
 
         # === Gyro bias estimation during stationary ===
         if self.is_stationary:
+            self.stationary_count += 1
+        if self.is_stationary and gyro_valid:
             # When stationary: gyro_reading = bias + noise
             alpha = self.bias_adaptation_rate
             self.gyro_bias = alpha * gyro_z + (1 - alpha) * self.gyro_bias
             # Clamp bias to physical limits (MEMS gyro bias rarely exceeds ±0.05 rad/s)
             self.gyro_bias = max(-0.05, min(0.05, self.gyro_bias))
-            self.stationary_count += 1
 
         # === Bias-corrected gyro ===
-        gyro_corrected = gyro_z - self.gyro_bias
+        gyro_corrected = gyro_z - self.gyro_bias if gyro_valid else omega_odom
 
         # === Slip detection ===
         disagreement = abs(omega_odom - gyro_corrected)
-        self.is_slip = disagreement > self.slip_threshold
+        self.is_slip = gyro_valid and disagreement > self.slip_threshold
 
         if self.is_slip:
             self.slip_count += 1
@@ -152,12 +182,15 @@ class ZUPTOdometry:
             omega_use = 0.0
         else:
             # Complementary filter: blend encoder omega with bias-corrected gyro.
-            # Encoders have systematic drift (wheel radius mismatch → heading arc).
-            # Gyro has no systematic drift (bias is calibrated during stops).
-            # alpha=0.30: 30% encoder + 70% gyro — gyro-dominant for heading accuracy.
-            # During slip (encoder-gyro disagreement > threshold): alpha=0.05 (95% gyro).
+            # An optional gyro blend needs measured wheel/gyro agreement and
+            # stationary bias calibration before it can improve heading.
+            # Default alpha=1.0 preserves the measured wheel trajectory. Blending
+            # an unvalidated gyro can straighten an encoder arc and inflate its
+            # endpoint distance even when the integrated speed is correct.
+            # Slip is diagnostic-only: crossing the threshold must not switch
+            # heading sources abruptly. Missing/stale gyro falls back to wheels.
             v_use = v_odom
-            blend = 0.05 if self.is_slip else self.gyro_blend_alpha
+            blend = self.gyro_blend_alpha if gyro_valid else 1.0
             omega_use = blend * omega_odom + (1.0 - blend) * gyro_corrected
 
         # Store for publishing
@@ -165,17 +198,15 @@ class ZUPTOdometry:
         self.omega = omega_use
 
         # === Pose update ===
-        self.theta += omega_use * dt
-        self.x += v_use * np.cos(self.theta) * dt
-        self.y += v_use * np.sin(self.theta) * dt
-
-        # Normalize theta to [-pi, pi]
-        while self.theta > np.pi:
-            self.theta -= 2 * np.pi
-        while self.theta < -np.pi:
-            self.theta += 2 * np.pi
-
-        return self.x, self.y, self.theta
+        fused_dyaw = omega_use * dt
+        rotation = self.theta + 0.5 * fused_dyaw - wheel_mid_yaw
+        self.x += dx * math.cos(rotation) - dy * math.sin(rotation)
+        self.y += dx * math.sin(rotation) + dy * math.cos(rotation)
+        self.theta = math.atan2(math.sin(self.theta + fused_dyaw),
+                                math.cos(self.theta + fused_dyaw))
+        self._last_wheel_pose = (wheel_x, wheel_y, wheel_yaw)
+        self._last_stamp_ns = stamp_ns
+        return True
 
 
 class ZUPTNode(Node):
@@ -214,8 +245,8 @@ class ZUPTNode(Node):
         self._lock = threading.Lock()
 
         # Timestamps
-        self._last_odom_time: Optional[float] = None
-        self._latest_gyro_z: float = 0.0
+        self._latest_gyro_z: Optional[float] = None
+        self._latest_imu_stamp_ns: Optional[int] = None
         self._initialized = False
 
         # Sensor QoS - IMU uses BEST_EFFORT, Odom uses RELIABLE (ros2_control)
@@ -300,7 +331,8 @@ class ZUPTNode(Node):
         self.declare_parameter('stationary_omega_threshold', 0.05)  # rad/s
         self.declare_parameter('bias_adaptation_rate', 0.01)
         self.declare_parameter('slip_threshold', 0.08)  # rad/s
-        self.declare_parameter('gyro_blend_alpha', 0.30)  # 0.30=70% gyro, prevents encoder heading drift
+        self.declare_parameter('gyro_blend_alpha', 1.0)  # wheel pose heading; gyro diagnostic-only by default
+        self.declare_parameter('imu_timeout', 0.2)  # seconds; stale gyro must not steer odom
 
         # Initial pose
         self.declare_parameter('initial_x', 0.0)
@@ -312,32 +344,31 @@ class ZUPTNode(Node):
 
     def _imu_callback(self, msg: Imu):
         """Store latest gyro reading."""
-        self._latest_gyro_z = msg.angular_velocity.z
+        with self._lock:
+            self._latest_gyro_z = msg.angular_velocity.z
+            self._latest_imu_stamp_ns = (msg.header.stamp.sec * 1_000_000_000 +
+                                         msg.header.stamp.nanosec)
 
     def _odom_callback(self, msg: Odometry):
         """Process wheel odometry and update pose."""
-        current_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        wheel_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                               1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
         with self._lock:
-            if self._last_odom_time is None:
-                self._last_odom_time = current_time
+            gyro_z = None
+            if self._latest_imu_stamp_ns is not None:
+                imu_age = (stamp_ns - self._latest_imu_stamp_ns) * 1e-9
+                if 0.0 <= imu_age <= self.get_parameter('imu_timeout').value:
+                    gyro_z = self._latest_gyro_z
+            updated = self.filter.update(p.x, p.y, wheel_yaw, gyro_z, stamp_ns)
+            if not self._initialized and self.filter._last_wheel_pose is not None:
                 self._initialized = True
                 self.get_logger().info('ZUPT filter initialized')
+            if not updated:
                 return
-
-            dt = current_time - self._last_odom_time
-            if dt <= 0 or dt > 0.5:
-                self._last_odom_time = current_time
-                return
-
-            # Extract velocities
-            v_odom = msg.twist.twist.linear.x
-            omega_odom = msg.twist.twist.angular.z
-
-            # Update filter
-            self.filter.update(v_odom, omega_odom, self._latest_gyro_z, dt)
-
-            self._last_odom_time = current_time
 
         # Publish
         self._publish_state(msg.header.stamp)
