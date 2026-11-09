@@ -57,10 +57,12 @@ Run these before every real-chair launch. Don't send a goal until all of them pa
 - **Lidar:** if `/scan` stops while `rplidar_node` is still running, or the node logs `RPLidar health status : 2` ("internal error"), unplug the lidar for 10 s and plug it back in. That cleared it on 2026-11-08.
 - **Scan rate:** `/scan` must hold about 10 Hz and `/scan_fused` at least 8 Hz for 2 minutes with the chair still. A slow `/scan_fused` makes the collision monitor drop it as stale ("timestamps differ ... Ignoring the source"), which causes stop-and-go and "collision ahead". Measure with an `rclpy` counter using `qos_profile_sensor_data`. `ros2 topic hz` showed nothing for the large scan topics from an agent shell.
 - **Start pose:** start in open floor (the map origin (0, 0) has 0.70 m clearance) and set **2D Pose Estimate** in RViz so the scan sits on the walls. A start next to a wall gives "Start occupied".
-- **Launch:** use `record_bag:=false` until the bag path `/opt/nvidia/rosbags` exists.
+- **Launch:** use `record_bag:=false` until the bag path `/opt/nvidia/rosbags` exists. Power the Arduino before launch. If it resets during startup (`write cycle resulted in an error: [ WheelchairSystem`, then no `odom` TF), stop the launch and relaunch.
 
 ## Working notes
 
 - Handoff state lives in `HANDOFF.md`. Read it first.
+- `fixes.md` records each real-chair problem and how it was fixed. Add an entry when you fix one.
+- `scan_fusion_v9.py` is edited in place, like the params files.
 - Build with `colcon build --base-paths src`.
 - Simulation run steps are in `how to run.md`. Nav steps for both sim and the real chair are in `AUTONOMOUS_NAV.md`.
