@@ -24,6 +24,16 @@ A permanent fix is hardware work the user has to do:
 3. If both runs give the same factor within 1% but it isn't 1.0, the mount has a fixed ratio. Then a per-wheel CPR is the correct permanent calibration. Add `CPR_L` and `CPR_R` in `final_control.ino` and reflash, with the user's go-ahead.
 4. On the ground: `python3 scripts/straight_test.py 4.0` twice after a 2D Pose Estimate. Pass: the chair drives straight, AMCL yaw change stays under 5°, and filtered distance is within 2% of the tape.
 
+## Voice run 2026-11-10 (after the encoder fix, v31, `logs/voice_real_233349.log` and `logs/real_nav_232421.log`)
+The user set the 2D Pose Estimate and drove two real goals by voice. Both arrived, with no StopZone stops, no stack crash and no rider takeover:
+
+| Goal | Time | Encoder L/R, yaw | Events |
+|---|---|---|---|
+| "take me to dp lab" | 38.8 s | 1.11, −116° (the route turns) | SlowdownZone 10, 1 `no valid path`, 1 spin, 1 backup after `Collision Ahead - Exiting DriveOnHeading` |
+| "go to optical lab" | 16.6 s | 1.01, −3° | SlowdownZone 11, 1 spin |
+
+Two more dp lab goals came while the chair was already there, so they didn't test driving. One came from the misheard "I will do a pickle lab", which voice_nav matched to the dp lab. That's the weak-match bug again: it should answer `none`. These two real goals count toward the Mode 2 pass (5 goals, 4 of 5 needed). Still open: the recovery near the start of the dp lab goal, and SlowdownZone toggling about 10 times per goal.
+
 ## Other faults seen 2026-11-10
 - **USB hub drops.** The Arduino and the lidar fell off USB together twice (`ttyACM0`→`ttyACM1` and `ttyUSB0`→`ttyUSB1` at the same moment). The first drop hit during bringup, and the second while the chair was being lifted. Each one gives `write cycle resulted in an error: [ WheelchairSystem ]` and needs a relaunch. Both devices share the hub, so suspect hub power. Put the Arduino and the lidar on separate laptop ports, or use a powered hub.
 - **Slow scan on the first launch:** `/scan` 3.8 Hz and `/scan_fused` 3.9 Hz, with the lidar reporting health OK at a 10 Hz setting. Unplugging the lidar for 10 s and relaunching restored 9.9 / 9.6 Hz.
@@ -41,7 +51,7 @@ A permanent fix is hardware work the user has to do:
 
 ## Next session, in order
 1. Mode 3 in sim, which doesn't need the chair: on `voice-vlm-nav`, carry the 0.40 m/s change into v30, then run the VLM zero-shot path in Gazebo `small_house` (`scripts/vlm_server.sh`, `vlm_nav.py`). Pass: 4 of 5 objects reached.
-2. The encoder is now calibrated and drives straight. Repeat the 5 m ground run once (`scripts/open_straight.py 5.0 0.4`), and re-measure the factor if the user ever remounts the encoder. Then do the Mode 2 real-chair steps from the previous handoff. Those are voice tests, then 5 goals between `dp_lab` and `optical_lab` (13.92, 3.65), 4 of 5 required.
+2. The encoder is now calibrated and drives straight. Repeat the 5 m ground run once (`scripts/open_straight.py 5.0 0.4`), and re-measure the factor if the user ever remounts the encoder. Then finish the Mode 2 real-chair pass: 5 goals between `dp_lab` and `optical_lab` (13.92, 3.65), 4 of 5 required. 2 arrived on 2026-11-10 (see Voice run above). Fix the weak-match bug first ("pickle lab" → `dp_lab`).
 3. Leftover items: RPP `detected collision ahead!` near walls, `SlowdownZone` toggling, "Transform data too old", the IMU fault, refusing weak voice matches ("doctor" → `dp_lab`), and stale AGENTS.md lines (the speed note says 0.25 m/s, and it says AMCL uses the fused scan).
 
 ## Done 2026-11-09 (all committed on `voice-slm-nav`)
