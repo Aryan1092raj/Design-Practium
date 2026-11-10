@@ -10,22 +10,23 @@ Simplified fusion logic compared to v7:
     - If lidar has no data (inf) and camera does -> use camera data
     - Otherwise -> keep lidar data
 
-That's it. No override_min_delta, no max_gap_fills, no max_overrides,
-no rate limiting. Camera data is trusted when it's closer than lidar.
+That's it. No override_min_delta, no max_gap_fills, and no max_overrides.
+Camera data is trusted when it's closer than lidar.
 
 Camera max depth: 3.0m for both side cameras (left D455 + right D435i).
 Front camera: 3.5m (D455, better baseline = better accuracy at range).
 
-Architecture (same as v7 — proven stable):
-  Camera CB (6Hz per camera, async):
-    PointCloud2 -> parse -> downsample -> depth filter -> transform
+Architecture (2026-11-09: keep camera work off executor threads):
+  Camera CB: replace the latest pending cloud for that camera, then return.
+  One camera worker (no overlapping cloud processing):
+    PointCloud2 buffer view -> NaN-aware stride -> depth filter -> transform
     -> height filter -> polar -> bin -> store overlay
 
   Scan CB (10Hz):
     copy /scan_filtered -> NaN/zero -> inf -> footprint filter -> rear crop
     -> for each camera: if cam < lidar, use cam -> publish /scan_fused
 
-DO NOT EDIT — create a new versioned file instead.
+  Overlays are immutable snapshots; the scan callback never takes a camera lock.
 """
 
 import array as _array
@@ -55,7 +56,49 @@ SENSOR_QOS = QoSProfile(
 )
 
 
-@dataclass
+def _sample_xyz(msg: PointCloud2, stride: int):
+    """Read only sampled XYZ values, preserving skip_nans=True then stride."""
+    dtype = point_cloud2.dtype_from_fields(
+        msg.fields, point_step=msg.point_step).newbyteorder(
+            '>' if msg.is_bigendian else '<')
+    points = np.ndarray(
+        (msg.height, msg.width), dtype=dtype, buffer=msg.data,
+        strides=(msg.row_step, msg.point_step))
+    xyz = tuple(points[name] for name in ('x', 'y', 'z'))
+    stride = max(1, stride)
+    packed = msg.row_step == msg.width * msg.point_step
+    if msg.is_dense and packed:
+        # No full-resolution conversion or copy on the usual dense-cloud path.
+        return tuple(values.reshape(-1)[::stride] for values in xyz)
+
+    if msg.is_dense:
+        selected = np.arange(0, msg.width * msg.height, stride)
+    else:
+        # Sampling raw offsets before removing NaNs would select different points.
+        valid = ~np.isnan(xyz[0]) & ~np.isnan(xyz[1]) & ~np.isnan(xyz[2])
+        selected = np.flatnonzero(valid)[::stride]
+    if packed:
+        return tuple(values.reshape(-1)[selected] for values in xyz)
+    rows, cols = np.divmod(selected, msg.width)
+    return tuple(values[rows, cols] for values in xyz)
+
+
+def _bin_min_ranges(idx, ranges, num_bins: int, min_points: int):
+    """Same per-bin minima/count rejection without unbuffered ufunc.at loops."""
+    overlay = np.full(num_bins, np.inf, dtype=np.float32)
+    if len(idx) == 0:
+        return overlay
+    order = np.argsort(idx, kind='stable')
+    sorted_idx = idx[order]
+    starts = np.r_[0, np.flatnonzero(sorted_idx[1:] != sorted_idx[:-1]) + 1]
+    counts = np.diff(np.r_[starts, len(idx)])
+    minima = np.minimum.reduceat(ranges[order], starts)
+    keep = counts >= min_points if min_points > 1 else np.ones(len(starts), dtype=bool)
+    overlay[sorted_idx[starts[keep]]] = minima[keep]
+    return overlay
+
+
+@dataclass(frozen=True)
 class CameraOverlay:
     """Per-camera processed polar data: min range per scan bin."""
     min_ranges: np.ndarray  # float32[num_bins], inf = no data
@@ -186,7 +229,10 @@ class ScanFusionV9(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # ---- State ----
-        self._lock = threading.Lock()
+        self._camera_lock = threading.Lock()
+        self._camera_pending = {}
+        self._camera_ready = threading.Event()
+        self._camera_stop = threading.Event()
         self._overlays: Dict[str, Optional[CameraOverlay]] = {}
         self._tf_cache: Dict[str, Optional[tuple]] = {}
         self._num_bins = 0
@@ -243,6 +289,10 @@ class ScanFusionV9(Node):
                 PointCloud2, topic,
                 lambda msg, n=name: self._pointcloud_cb(msg, n), SENSOR_QOS,
                 callback_group=self._cam_cb_group)
+
+        self._camera_worker = threading.Thread(
+            target=self._camera_loop, name='scan_fusion_camera', daemon=True)
+        self._camera_worker.start()
 
         # ---- Diagnostics timer ----
         self.create_timer(10.0, self._print_stats)
@@ -303,9 +353,46 @@ class ScanFusionV9(Node):
 
     # ------------------------------------------------------------------
     def _pointcloud_cb(self, msg: PointCloud2, cam_name: str):
-        if not self._initialized:
+        """Bounded latest-only handoff; never process a cloud on the executor."""
+        if not self._initialized or self._camera_stop.is_set():
             return
+        with self._camera_lock:
+            self._camera_pending[cam_name] = msg
+            self._camera_ready.set()
 
+    def _camera_loop(self):
+        while True:
+            self._camera_ready.wait()
+            if self._camera_stop.is_set():
+                return
+            with self._camera_lock:
+                self._camera_ready.clear()
+            # Take each camera's latest cloud just before processing it. New arrivals
+            # overwrite that camera's pending slot, never build an executor backlog.
+            for cam_name in self._cam_names:
+                if self._camera_stop.is_set():
+                    return
+                with self._camera_lock:
+                    msg = self._camera_pending.pop(cam_name, None)
+                if msg is None:
+                    continue
+                try:
+                    self._process_pointcloud(msg, cam_name)
+                except Exception as exc:
+                    self.get_logger().warning(
+                        f'{cam_name} cloud processing failed: {exc}', throttle_duration_sec=5.0)
+                finally:
+                    # Release large cloud buffers outside the queue lock.
+                    del msg
+
+    def destroy_node(self):
+        self._camera_stop.set()
+        self._camera_ready.set()
+        self._camera_worker.join()
+        return super().destroy_node()
+
+    # ------------------------------------------------------------------
+    def _process_pointcloud(self, msg: PointCloud2, cam_name: str):
         cam_frame = getattr(self, f'_{cam_name}_frame')
         tf_data = self._get_tf(cam_frame)
         if tf_data is None:
@@ -315,30 +402,10 @@ class ScanFusionV9(Node):
         min_depth = getattr(self, f'_{cam_name}_min_depth')
         max_depth = getattr(self, f'_{cam_name}_max_depth')
 
-        # Parse PointCloud2
-        pts = point_cloud2.read_points_numpy(
-            msg, field_names=('x', 'y', 'z'), skip_nans=True)
-
-        if len(pts) == 0:
+        # Zero-copy field views; stride before allocating/transforming XYZ points.
+        x, y, z = _sample_xyz(msg, self.downsample)
+        if len(x) == 0:
             return
-
-        # Handle structured vs unstructured arrays
-        if pts.dtype.names is not None:
-            x = pts['x']
-            y = pts['y']
-            z = pts['z']
-        elif pts.ndim == 2 and pts.shape[1] >= 3:
-            x = pts[:, 0]
-            y = pts[:, 1]
-            z = pts[:, 2]
-        else:
-            return
-
-        # Downsample before transform (CPU savings)
-        if self.downsample > 1:
-            x = x[::self.downsample]
-            y = y[::self.downsample]
-            z = z[::self.downsample]
 
         # Depth filter in camera optical frame (Z = depth)
         depth_mask = (z >= min_depth) & (z <= max_depth)
@@ -371,14 +438,9 @@ class ScanFusionV9(Node):
         idx = indices[in_bounds]
         rng = ranges[in_bounds]
 
-        overlay_ranges = np.full(self._num_bins, np.inf, dtype=np.float32)
-        if len(idx) > 0:
-            np.minimum.at(overlay_ranges, idx, rng)
-            # Reject bins with too few points (noise rejection)
-            if self.min_points_per_bin > 1:
-                overlay_counts = np.zeros(self._num_bins, dtype=np.int32)
-                np.add.at(overlay_counts, idx, 1)
-                overlay_ranges[overlay_counts < self.min_points_per_bin] = np.inf
+        overlay_ranges = _bin_min_ranges(
+            idx, rng, self._num_bins, self.min_points_per_bin)
+        overlay_ranges.flags.writeable = False
 
         overlay = CameraOverlay(
             min_ranges=overlay_ranges,
@@ -387,8 +449,9 @@ class ScanFusionV9(Node):
             heading=self._get_heading(),
         )
 
-        with self._lock:
-            self._overlays[cam_name] = overlay
+        # Atomic reference replacement under CPython's GIL. Readers retain their
+        # immutable snapshot, so _scan_cb never waits for camera processing.
+        self._overlays[cam_name] = overlay
 
     # ------------------------------------------------------------------
     def _scan_cb(self, scan_msg: LaserScan):
@@ -473,42 +536,41 @@ class ScanFusionV9(Node):
             return
 
         cam_bins_used = 0
-        with self._lock:
-            for cam_name in self._cam_names:
-                ov = self._overlays.get(cam_name)
-                if ov is None or ov.point_count == 0:
-                    continue
-                age = now - ov.timestamp
-                if age > self.max_camera_age:
-                    continue
+        for cam_name in self._cam_names:
+            ov = self._overlays.get(cam_name)
+            if ov is None or ov.point_count == 0:
+                continue
+            age = now - ov.timestamp
+            if age > self.max_camera_age:
+                continue
 
-                cam_ranges = ov.min_ranges
+            cam_ranges = ov.min_ranges
 
-                # Angular compensation: shift bins by robot rotation since capture
-                if ov.heading is not None and current_heading is not None:
-                    delta = current_heading - ov.heading
-                    # Normalize to [-pi, pi]
-                    delta = (delta + math.pi) % (2 * math.pi) - math.pi
-                    shift = int(round(delta / self._angle_increment))
-                    if abs(shift) > 0:
-                        cam_ranges = np.roll(cam_ranges, shift)
-                        # Invalidate bins that wrapped around (no real data there)
-                        if shift > 0:
-                            cam_ranges[:shift] = np.inf
-                        else:
-                            cam_ranges[shift:] = np.inf
+            # Angular compensation: shift bins by robot rotation since capture
+            if ov.heading is not None and current_heading is not None:
+                delta = current_heading - ov.heading
+                # Normalize to [-pi, pi]
+                delta = (delta + math.pi) % (2 * math.pi) - math.pi
+                shift = int(round(delta / self._angle_increment))
+                if abs(shift) > 0:
+                    cam_ranges = np.roll(cam_ranges, shift)
+                    # Invalidate bins that wrapped around (no real data there)
+                    if shift > 0:
+                        cam_ranges[:shift] = np.inf
+                    else:
+                        cam_ranges[shift:] = np.inf
 
-                cam_valid = np.isfinite(cam_ranges)
+            cam_valid = np.isfinite(cam_ranges)
 
-                # Publish per-camera debug scan
-                cam_pub = self._cam_pubs.get(cam_name)
-                if cam_pub is not None:
-                    self._publish(cam_ranges.copy(), scan_msg, cam_pub)
+            # Publish per-camera debug scan
+            cam_pub = self._cam_pubs.get(cam_name)
+            if cam_pub is not None:
+                self._publish(cam_ranges.copy(), scan_msg, cam_pub)
 
-                # THE CORE LOGIC: if camera < lidar, use camera
-                use_camera = cam_valid & (cam_ranges < fused)
-                fused[use_camera] = cam_ranges[use_camera]
-                cam_bins_used += int(np.sum(use_camera))
+            # THE CORE LOGIC: if camera < lidar, use camera
+            use_camera = cam_valid & (cam_ranges < fused)
+            fused[use_camera] = cam_ranges[use_camera]
+            cam_bins_used += int(np.sum(use_camera))
 
         self._total_cam_bins += cam_bins_used
         self._frame_count += 1
@@ -577,6 +639,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

@@ -40,7 +40,10 @@ volatile int lastEncodedR = 0;
 volatile long encoderValueR = 0;
 
 // Wheel specifications
-const long CPR = 10000;
+const long CPR = 10000;    // right wheel
+// Left encoder counts 1.28-1.34x per real wheel turn (lifted runs 2026-11-10); 1.31 is their mean.
+// shortcut: the factor moved 1.54 -> 1.28 -> 1.34 with the mount, so re-measure after any remount.
+const long CPR_L = 13100;
 const float WHEEL_RADIUS = 0.1524; // 6 inches
 const float WHEELBASE = 0.565; // 57 cm
 const float MAX_ANGULAR_VEL = 17.59; // rad/s
@@ -635,7 +638,7 @@ void loop() {
     long deltaCountsR = encoderValueR - lastEncoderR;
 
     double raw_right_vel = (deltaCountsR / (float)CPR) * (2.0 * PI / deltaT);
-    double raw_left_vel = -(deltaCountsL / (float)CPR) * (2.0 * PI / deltaT);
+    double raw_left_vel = -(deltaCountsL / (float)CPR_L) * (2.0 * PI / deltaT);
 
     // Apply filtering
     filtered_right_vel = FILTER_ALPHA * raw_right_vel + (1.0 - FILTER_ALPHA) * filtered_right_vel;

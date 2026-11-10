@@ -48,6 +48,10 @@
 #      + 0.05 m, 1.2 s): slows any command, turns included, before the chair
 #      would touch an obstacle. StopZone/SlowdownZone do not cover the corner
 #      sweep of an in-place turn (2026-11-08, "never hit anything").
+#   5. Speed 0.50 -> 0.40 (2026-11-08): RPP desired_linear_vel and
+#      velocity_smoother linear max_velocity. On the real chair at 0.50 the
+#      map pose ran ahead of the chair and goals ended ~2 m short. Accel stays
+#      0.40.
 ###############################################################################
 ###############################################################################
 # AMCL - RPLIDAR S3 OPTIMIZED
@@ -164,7 +168,7 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.50            # 2026-11-07: 0.25 -> 0.50 cruise
+      desired_linear_vel: 0.40            # 0.25 -> 0.50 (2026-11-07) -> 0.40 (2026-11-08)
       max_linear_accel: 0.40              # 2026-11-07: 0.25 -> 0.40
       max_linear_decel: 0.50
       lookahead_dist: 0.70
@@ -372,7 +376,7 @@ velocity_smoother:
     smoothing_frequency: 40.0
     scale_velocities: true
     feedback: "OPEN_LOOP"
-    max_velocity: [0.50, 0.0, 0.80]   # linear 0.25 -> 0.50 (2026-11-07); angular 0.50 -> 0.80 to match rotate_to_heading_angular_vel
+    max_velocity: [0.40, 0.0, 0.80]   # linear 0.25 -> 0.50 (2026-11-07) -> 0.40 (2026-11-08); angular 0.50 -> 0.80 to match rotate_to_heading_angular_vel
     min_velocity: [-0.15, 0.0, -0.80]
     max_accel: [0.40, 0.0, 1.2]       # linear 0.25 -> 0.40 (2026-11-07); angular 0.8 -> 1.2
     max_decel: [-0.50, 0.0, -1.2]     # 2026-11-07: linear -0.25 -> -0.50, 0.25 m to stop from 0.50 m/s, inside the 1.0 s collision lookahead

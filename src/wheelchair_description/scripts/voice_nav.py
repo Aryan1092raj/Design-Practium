@@ -28,6 +28,7 @@ from action_msgs.msg import GoalStatus
 from faster_whisper import WhisperModel
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose, Spin
+from nav_msgs.msg import Path
 from rapidfuzz import fuzz, process
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -67,12 +68,15 @@ class VoiceNav(Node):
         self.places = load_locations(self.declare_parameter("locations", "locations.yaml").value)
         self.create_subscription(String, "/voice/transcript", lambda m: self.on_text(m.data), 10)
         self.status = self.create_publisher(String, "/voice/status", 10)
+        self.plan = self.create_publisher(Path, "/plan", 10)  # Nav2 leaves its last path in RViz
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.spin_client = ActionClient(self, Spin, "spin")
         self.goal_handle = None
         self.busy = False
+        self.next = None  # (name, place) said while moving; run() starts it after the cancel
+        self.lock = threading.Lock()  # busy and next change together across threads
         self.cancelled = threading.Event()
 
     def say(self, text):
@@ -97,6 +101,8 @@ class VoiceNav(Node):
         uses = self.places[last].get("desc", "").split(";")[-1].split(",")[0].strip()
         example = [{"role": "user", "content": f"I want to {uses}" if uses else f"take me to the {names[last]}"},
                    {"role": "assistant", "content": json.dumps({"place": names[last]})}]
+        # An unlisted place must give none: qwen3:4b mapped "a pickle lab" to "dp lab".
+        unlisted = next(p for p in ("chemistry lab", "garage") if p not in names.values())
         body = {"model": SLM_MODEL, "stream": False, "think": False, "format": schema,
                 "keep_alive": "30m", "options": {"temperature": 0, "num_predict": 64},  # 24 cut the JSON short
                 "messages": [
@@ -104,8 +110,11 @@ class VoiceNav(Node):
                      "You pick where a wheelchair rider wants to go. Places and what is there:\n"
                      + catalog + "\nIf the rider names a place, or says something they want to do "
                      'or find that fits one place, reply JSON {"place": "<that place>"}. If it is '
-                     'not a request to go somewhere, reply {"place": "none"}.'},
+                     'not a request to go somewhere, or it names a place that is not in the list, '
+                     'reply {"place": "none"}.'},
                     *example,
+                    {"role": "user", "content": f"I will go to the {unlisted}"},
+                    {"role": "assistant", "content": '{"place": "none"}'},
                     {"role": "user", "content": "what is the weather"},
                     {"role": "assistant", "content": '{"place": "none"}'},
                     {"role": "user", "content": text}]}
@@ -122,9 +131,13 @@ class VoiceNav(Node):
     def on_text(self, text):
         t = text.lower()
         if STOP.search(t):
-            self.cancelled.set()
-            if self.goal_handle:
-                self.goal_handle.cancel_goal_async()
+            with self.lock:
+                self.next = None
+                if not self.busy:
+                    self.clear_plan()
+                    self.say("Nothing to stop.")
+                    return
+                self.cancel()
             self.say("Stopping.")
             return
         if not self.places:
@@ -141,7 +154,9 @@ class VoiceNav(Node):
         # such as "take me where I can cook" through each place's desc.
         match = None
         if (m or len(bare.split()) <= 3) and not NOT.search(t):
-            match = process.extractOne(target, names, scorer=fuzz.WRatio, score_cutoff=85)
+            # ratio, not WRatio: WRatio scores substrings, so "chemistry lab" got 86 against the
+            # short name "dp lab". Extra words fail here and fall through to the SLM.
+            match = process.extractOne(target, names, scorer=fuzz.ratio, score_cutoff=85)
         if not match:
             slm = self.slm_place(t, names)  # None when the SLM is down
             if slm and slm != "none":
@@ -150,13 +165,27 @@ class VoiceNav(Node):
             if m and not NOT.search(t):
                 self.say(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
             return  # otherwise ordinary speech near the chair is ignored
-        if self.busy:
-            self.say("I am already moving. Say stop first.")
-            return
-        self.busy = True
-        self.cancelled.clear()
+        with self.lock:
+            if self.busy:  # a new place replaces the current goal
+                self.next = (match[0], self.places[match[2]])
+                self.cancel()
+                self.say(f"Changing to the {match[0]}.")
+                return
+            self.busy = True
+            self.cancelled.clear()
         threading.Thread(target=self.run, args=(match[0], self.places[match[2]]),
                          daemon=True).start()
+
+    def cancel(self):
+        self.cancelled.set()
+        if self.goal_handle:
+            self.goal_handle.cancel_goal_async()
+
+    def clear_plan(self):
+        path = Path()
+        path.header.frame_id = "map"
+        path.header.stamp = self.get_clock().now().to_msg()
+        self.plan.publish(path)
 
     def run(self, name, p):
         try:
@@ -176,7 +205,14 @@ class VoiceNav(Node):
                 self.say(f"Arrived at the {name}." if ok else
                          f"I could not reach the {name}. I may be stuck. Please help me.")
         finally:
-            self.busy = False
+            with self.lock:
+                nxt, self.next = self.next, None
+                if nxt:
+                    self.cancelled.clear()
+                    threading.Thread(target=self.run, args=nxt, daemon=True).start()
+                else:
+                    self.busy = False
+                    self.clear_plan()
 
     def face(self, yaw):
         """Nav2 ignores the goal heading (yaw_goal_tolerance 6.28 in the chair's params), so turn
@@ -255,7 +291,7 @@ def listen(node, stt):
 def main():
     rclpy.init()
     node = VoiceNav()
-    stt = WhisperModel("base.en", device="cpu", compute_type="int8")
+    stt = WhisperModel("base.en", device="cuda", compute_type="float16")  # CPU int8 took seconds per command
     threading.Thread(target=listen, args=(node, stt), daemon=True).start()
     node.say("Voice navigation ready.")
     try:

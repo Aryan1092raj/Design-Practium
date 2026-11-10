@@ -385,8 +385,8 @@ void WheelchairInterface::parseLegacyFormat(const std::string &data)
     cleaned_data.erase(0, cleaned_data.find_first_not_of(" \t\r\n"));
     cleaned_data.erase(cleaned_data.find_last_not_of(" \t\r\n") + 1);
 
-    // Look for pattern starting with 'r' or 'l' followed by 'p' or 'n' and numbers
-    std::regex wheel_match(R"(([rl][pn]\d+\.?\d*.*))");
+    // Keep negative zero (rp-0.00) so matching cannot discard the right field.
+    std::regex wheel_match(R"(([rl][pn]-?\d+\.?\d*.*))");
     std::smatch match;
     if (std::regex_search(cleaned_data, match, wheel_match)) {
       cleaned_data = match[1].str();

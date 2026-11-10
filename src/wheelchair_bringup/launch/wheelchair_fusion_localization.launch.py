@@ -551,7 +551,7 @@ def generate_launch_description():
                     'stationary_omega_threshold': 0.05,
                     'bias_adaptation_rate': 0.01,
                     'slip_threshold': 0.08,  # diagnostic-only — slip detection published but doesn't swap source
-                    'gyro_blend_alpha': 0.30,  # complementary filter: 30% encoder + 70% gyro, prevents heading drift
+                    'gyro_blend_alpha': 1.0,  # 2026-11-09: preserve wheel trajectory; gyro bias/slip diagnostic-only
                     'use_sim_time': LaunchConfiguration('use_sim_time')
                 }]
             )

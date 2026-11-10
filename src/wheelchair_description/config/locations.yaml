@@ -1,3 +1,4 @@
 # Named goals on maps/real_chair_indoor_2026-11-05_v2.yaml, written by save_location.py.
 dp_lab: {x: 10.95, y: 1.94, yaw: 0.0}
-optical_lab: {x: 13.56, y: 4.69, yaw: 0.0}
+# optical_lab moved from (13.56, 4.69) in the narrow doorway to the open floor in front of it (1.2 m clearance).
+optical_lab: {x: 13.92, y: 3.65, yaw: 0.0}

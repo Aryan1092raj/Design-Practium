@@ -89,6 +89,12 @@
 #   3. From v29: collision_monitor FootprintApproach (approach, chair outline
 #      + 0.05 m, 1.2 s) slows any command, turns included, before the chair
 #      would touch an obstacle.
+#
+# CARRIED FROM v31 (2026-11-10, merged from voice-slm-nav):
+#   Cruise 0.50 -> 0.40: RPP desired_linear_vel and velocity_smoother linear
+#   max_velocity, the real-chair cruise for every mode (at 0.50 the real
+#   chair's map pose ran ahead of it). Accel 0.40, decel -0.50 and angular
+#   limits stay as above; FollowPathReverse is unchanged.
 ###############################################################################
 ###############################################################################
 # AMCL - RPLIDAR S3 OPTIMIZED
@@ -205,7 +211,7 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.50            # from v29: 0.25 -> 0.50 cruise
+      desired_linear_vel: 0.40            # from v31: cruise 0.50 -> 0.40 (2026-11-10)
       max_linear_accel: 0.40              # from v29: 0.25 -> 0.40
       max_linear_decel: 0.50
       lookahead_dist: 0.70
@@ -446,7 +452,7 @@ velocity_smoother:
     smoothing_frequency: 40.0
     scale_velocities: true
     feedback: "OPEN_LOOP"
-    max_velocity: [0.50, 0.0, 0.80]     # linear 0.25 -> 0.50 from v29; from v31: angular 0.50 -> 0.80
+    max_velocity: [0.40, 0.0, 0.80]     # linear 0.25 -> 0.50 from v29, 0.40 from v31; from v31: angular 0.50 -> 0.80
     min_velocity: [-0.10, 0.0, -0.80]   # v30: reverse capped at the v4 BackUp speed; angular from v31
     max_accel: [0.40, 0.0, 1.2]         # linear 0.25 -> 0.40 from v29; from v31: angular 0.8 -> 1.2
     max_decel: [-0.50, 0.0, -1.2]     # from v29: linear -0.25 -> -0.50, 0.25 m to stop from 0.50 m/s

@@ -33,6 +33,14 @@
 #   7. collision_monitor StopZone/SlowdownZone points: flat double list ->
 #      string of [x, y] pairs, same polygons. Jazzy rejected the old type and
 #      the monitor never activated (2026-11-07 sim).
+#   8. SlowdownZone ±0.95 x ±0.82 -> 0.95 ahead, 0.75 behind, ±0.45 wide, and
+#      slowdown x0.3 -> limit 0.15 m/s linear, 0.8 rad/s angular. On the real
+#      chair (2026-11-07) ~105 fused-scan points beside the chair held every
+#      command at 30% (0.075 m/s), and x0.3 cut a 0.35 rad/s Spin to 0.105, inside
+#      the motor deadband, so the heading turn timed out.
+#   9. From v29 (2026-11-08): collision_monitor FootprintApproach (approach,
+#      chair outline + 0.05 m, 1.2 s) slows any command, turns included,
+#      before the chair would touch an obstacle.
 #
 #
 # CARRIED FROM v29 (2026-11-07, Mode 1 speed and smoothness, tested in Gazebo
@@ -43,6 +51,11 @@
 #   2. RPP max_angular_accel 3.2 -> 16.0. 3.2 made RPP ask 0.16 rad/s from
 #      rest, which sat in the real chair's motor deadband (bag
 #      session_20261107_000512); the OPEN_LOOP smoother still ramps at 1.2.
+#
+# CARRIED FROM v29 (2026-11-08):
+#   Speed 0.50 -> 0.40: RPP desired_linear_vel and velocity_smoother linear
+#   max_velocity. On the real chair at 0.50 the map pose ran ahead of the
+#   chair and voice goals ended ~2 m short of dp_lab. Accel stays 0.40.
 ###############################################################################
 ###############################################################################
 # AMCL - RPLIDAR S3 OPTIMIZED
@@ -159,7 +172,7 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.50            # from v29: 0.25 -> 0.50 cruise
+      desired_linear_vel: 0.40            # from v29: 0.25 -> 0.50 -> 0.40 (2026-11-08)
       max_linear_accel: 0.40              # from v29: 0.25 -> 0.40
       max_linear_decel: 0.50
       lookahead_dist: 0.70
@@ -367,7 +380,7 @@ velocity_smoother:
     smoothing_frequency: 40.0
     scale_velocities: true
     feedback: "OPEN_LOOP"
-    max_velocity: [0.50, 0.0, 0.80]   # linear 0.25 -> 0.50 from v29; angular 0.50 -> 0.80 to match rotate_to_heading_angular_vel
+    max_velocity: [0.40, 0.0, 0.80]   # linear 0.25 -> 0.50 -> 0.40 from v29; angular 0.50 -> 0.80 to match rotate_to_heading_angular_vel
     min_velocity: [-0.15, 0.0, -0.80]
     max_accel: [0.40, 0.0, 1.2]       # linear 0.25 -> 0.40 from v29; angular 0.8 -> 1.2
     max_decel: [-0.50, 0.0, -1.2]     # from v29: linear -0.25 -> -0.50, 0.25 m to stop from 0.50 m/s
@@ -405,7 +418,7 @@ collision_monitor:
     source_timeout: 2.0
     base_shift_correction: true
     stop_pub_timeout: 2.0
-    polygons: ["StopZone", "SlowdownZone"]
+    polygons: ["StopZone", "SlowdownZone", "FootprintApproach"]
     StopZone:
       type: "polygon"
       points: "[[0.55, 0.42], [0.55, -0.42], [-0.55, -0.42], [-0.55, 0.42]]"  # Jazzy wants a string of [x, y] pairs
@@ -415,12 +428,25 @@ collision_monitor:
       polygon_pub_topic: "polygon_stop"
     SlowdownZone:
       type: "polygon"
-      points: "[[0.95, 0.82], [0.95, -0.82], [-0.95, -0.82], [-0.95, 0.82]]"  # Jazzy wants a string of [x, y] pairs
-      action_type: "slowdown"
+      points: "[[0.95, 0.45], [0.95, -0.45], [-0.75, -0.45], [-0.75, 0.45]]"  # ahead/behind only: chair parts and walls beside it held speed at 30%
+      action_type: "limit"  # was slowdown x0.3: it also cut in-place turns to 0.105 rad/s, inside the motor deadband
       max_points: 3
-      slowdown_ratio: 0.3
+      linear_limit: 0.15
+      angular_limit: 0.8
       visualize: true
       polygon_pub_topic: "polygon_slowdown"
+    # From v29: simulates the current command (rotation included) and slows it
+    # so the chair outline + 0.05 m never reaches an obstacle within 1.2 s. It
+    # covers the in-place-turn sweep the narrowed SlowdownZone no longer does.
+    FootprintApproach:
+      type: "polygon"
+      points: "[[0.50, 0.40], [0.50, -0.40], [-0.50, -0.40], [-0.50, 0.40]]"  # 0.90 x 0.70 chair + 0.05 m
+      action_type: "approach"
+      time_before_collision: 1.2
+      simulation_time_step: 0.1
+      min_points: 4
+      visualize: true
+      polygon_pub_topic: "polygon_approach"
     observation_sources: ["scan"]
     scan:
       type: "scan"
