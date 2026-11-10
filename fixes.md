@@ -2,7 +2,7 @@
 
 This file lists the problems that stopped or degraded real-chair runs and how each one was fixed. Newest first. Each entry gives the symptom, the cause, the fix and how it was checked.
 
-## 2026-11-09: left wheel encoder overcounts about 1.54× (OPEN, hardware)
+## 2026-11-09: left wheel encoder overcounts about 1.54× (FIXED 2026-11-10 by calibration; a rigid mount is still pending)
 
 **Symptom.** On a 4 m straight goal the chair curves left until it stops at a wall, and it moves again only after it is pushed away. The tape reads about 3 m while odometry reads about 4 m. After every drive the lidar scan sits rotated off the map walls, and 2D Pose Estimate has to be set again. Earlier drives showed the same fault as a "37% / 32% odometry overcount" and as a left-right zigzag.
 
@@ -16,9 +16,20 @@ This file lists the problems that stopped or degraded real-chair runs and how ea
 
 The right encoder roughly matches the tape. Both wheels use `CPR = 10000` in `final_control.ino:43`. The firmware speed loop trusts the inflated left reading and slows the left motor, so the chair veers left. Odometry averages the two wheels, which overcounts distance, and it reads a large false right turn, which ruins the heading. The user suspects the left encoder is loose.
 
-**Fix (pending).** Re-seat or tighten the left encoder and check its cable. Then bench-test with the wheels lifted: one hand-turned revolution of each wheel should read 2π rad. If the left wheel reads a steady 1.54 × 2π instead, set a per-wheel CPR in the firmware.
+**Update 2026-11-10: still open after re-attaching both encoders.** On the ground, a 5 m drive at 0.4 m/s (`scripts/open_straight.py 5.0 0.4`) read L/R 1.04, yet the chair veered visibly left (AMCL +36° over 1.6 m) until the StopZone stopped it at an object on its left. L/R near 1.0 proves nothing here: the firmware PID (`final_control.ino:652-656`) forces both encoder speeds to the same target, so it only shows the PID is tracking. With the wheels lifted, the chair's left wheel made fewer real turns than its encoder counted, while the right wheel matched:
 
-**Check (pending).** Run `scripts/straight_test.py 4.0` twice. Pass: the chair drives straight, `encoder_ratio.py` shows L/R ≈ 1.0, and filtered distance is within 2% of the tape.
+| Lifted run (0.15 m/s, stop on `/wc_control/odom`) | Right encoder / real | Left encoder / real | Left factor |
+|---|---|---|---|
+| 3 rev (2.871 m) | 2.98 / about 3.0 | 3.07 / about 2.4 | about 1.28 |
+| 5 rev (4.788 m) | 5.00 / about 5.0 | 5.08 / about 3.8 | about 1.34 |
+
+Real turns were counted by hand against a tape mark, so each factor is good to a few percent. The factor moved from 1.54 to 1.28 to 1.34, so a per-wheel CPR would not hold. Overcounting rules out a slipping coupling, which loses counts. Two causes fit: a drive ratio that depends on how the encoder is pressed or mounted (a roller or belt), or electrical noise adding edges on the left encoder lines (pins 2 and 3).
+
+**Fix (applied 2026-11-10, calibration).** On the user's request, `final_control.ino` now uses `CPR_L = 13100` (10000 × 1.31, the mean of the two lifted runs) for the left wheel, while the right keeps `CPR = 10000`. It was flashed with `arduino-cli upload --fqbn arduino:avr:mega -p /dev/ttyACM1 src/wheelchair_firmware/firmware/final_control`. The calibration holds only while the mount stays put. Mounting the left encoder rigidly is still the lasting fix, and the factor must be measured again after any remount.
+
+**Check.** Lifted 5-rev run after the reflash (`logs/real_nav_232421.log` 1794333390–430): the encoders read right 5.02 rev and left 5.06 rev, and the user counted about 5 real turns on both wheels. That passes. On the ground, `scripts/open_straight.py 5.0 0.4` (`logs/real_nav_232421.log` 1794333536–553) drove the full 5 m in 16 s with no collision-monitor stops. Odom read 5.09 m, AMCL 5.13 m, the AMCL yaw change was 3.3° (+36° before the fix), and the encoders read L/R 1.01 with −3° yaw. The user taped about 5 m with 4–5° of drift at most. That passes, from one run. Repeat it when convenient to confirm the factor holds.
+
+**Check procedure.** Lifted 5-rev run, twice: `python3 scripts/open_straight.py 4.788 0.15 /wc_control/odom`, counting real turns against a tape mark. Pass: both wheels make 5.0 ± 0.1 turns. Then `scripts/straight_test.py 4.0` twice on the ground. Pass: the chair drives straight, AMCL yaw change stays under 5°, and filtered distance is within 2% of the tape.
 
 ## 2026-11-09: motors not powered gave an encoder stall fault
 
