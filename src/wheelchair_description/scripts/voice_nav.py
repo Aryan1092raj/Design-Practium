@@ -101,6 +101,8 @@ class VoiceNav(Node):
         uses = self.places[last].get("desc", "").split(";")[-1].split(",")[0].strip()
         example = [{"role": "user", "content": f"I want to {uses}" if uses else f"take me to the {names[last]}"},
                    {"role": "assistant", "content": json.dumps({"place": names[last]})}]
+        # An unlisted place must give none: qwen3:4b mapped "a pickle lab" to "dp lab".
+        unlisted = next(p for p in ("chemistry lab", "garage") if p not in names.values())
         body = {"model": SLM_MODEL, "stream": False, "think": False, "format": schema,
                 "keep_alive": "30m", "options": {"temperature": 0, "num_predict": 64},  # 24 cut the JSON short
                 "messages": [
@@ -108,8 +110,11 @@ class VoiceNav(Node):
                      "You pick where a wheelchair rider wants to go. Places and what is there:\n"
                      + catalog + "\nIf the rider names a place, or says something they want to do "
                      'or find that fits one place, reply JSON {"place": "<that place>"}. If it is '
-                     'not a request to go somewhere, reply {"place": "none"}.'},
+                     'not a request to go somewhere, or it names a place that is not in the list, '
+                     'reply {"place": "none"}.'},
                     *example,
+                    {"role": "user", "content": f"I will go to the {unlisted}"},
+                    {"role": "assistant", "content": '{"place": "none"}'},
                     {"role": "user", "content": "what is the weather"},
                     {"role": "assistant", "content": '{"place": "none"}'},
                     {"role": "user", "content": text}]}
@@ -149,7 +154,9 @@ class VoiceNav(Node):
         # such as "take me where I can cook" through each place's desc.
         match = None
         if (m or len(bare.split()) <= 3) and not NOT.search(t):
-            match = process.extractOne(target, names, scorer=fuzz.WRatio, score_cutoff=85)
+            # ratio, not WRatio: WRatio scores substrings, so "chemistry lab" got 86 against the
+            # short name "dp lab". Extra words fail here and fall through to the SLM.
+            match = process.extractOne(target, names, scorer=fuzz.ratio, score_cutoff=85)
         if not match:
             slm = self.slm_place(t, names)  # None when the SLM is down
             if slm and slm != "none":
