@@ -47,7 +47,7 @@ mode3_cleanup() {
         kill -TERM "$M3_TEE_PID" 2>/dev/null || true
         wait "$M3_TEE_PID" 2>/dev/null || true
     fi
-    printf 'VLM server left running; health: http://127.0.0.1:8091/health\n'
+    printf 'Local model service left running for reuse.\n'
     exit "$status"
 }
 
@@ -248,6 +248,11 @@ try:
         print("FAIL /amcl_settle is absent from the live ROS graph; rebuild the workspace and inspect the navigation log")
         raise SystemExit(1)
     print("PASS /amcl_settle is present in the live ROS graph")
+    if not sim:
+        if 'rviz2' not in node.get_node_names():
+            print('FAIL RViz is absent; use the desktop terminal and inspect the launch log')
+            raise SystemExit(1)
+        print('PASS RViz is present in the live ROS graph')
 finally:
     node.destroy_node()
     rclpy.try_shutdown()
@@ -259,40 +264,63 @@ mode3_text_command() {
     if [[ "$M3_MODE" == sim ]]; then
         printf '  export FASTRTPS_DEFAULT_PROFILES_FILE=%q\n' "$FASTRTPS_DEFAULT_PROFILES_FILE"
     fi
-    printf '  ROS_DOMAIN_ID=%q ros2 topic pub --once /voice/transcript std_msgs/msg/String "{data: '\''go to the bed'\''}"\n' "$ROS_DOMAIN_ID"
+    local example='go to the chair'
+    [[ "$M3_VERSION" != 31 ]] || example='go to the optical lab'
+    printf '  ROS_DOMAIN_ID=%q ros2 topic pub --once /voice/transcript std_msgs/msg/String "{data: '\''%s'\''}"\n' "$ROS_DOMAIN_ID" "$example"
 }
 
 mode3_main() {
     M3_MODE=$1
     shift
     M3_CHECKS=1
+    M3_VERSION=30
+    M3_MAP='' M3_LOCATIONS=locations.yaml
     M3_MIC=true
     [[ "$M3_MODE" != sim ]] || M3_MIC=false
     while (( $# )); do
         case "$1" in
             --text) M3_MIC=false ;;
             --no-checks) M3_CHECKS=0 ;;
+            --version|--map|--locations)
+                (( $# >= 2 )) || mode3_fail "$1 needs a value"
+                case "$1" in
+                    --version) M3_VERSION=$2 ;;
+                    --map) M3_MAP=$2 ;;
+                    --locations) M3_LOCATIONS=$2 ;;
+                esac
+                shift ;;
             -h|--help)
-                printf 'Usage: scripts/mode3_%s.sh [--text] [--no-checks]\n' "$M3_MODE"
+                printf 'Usage: scripts/mode3_%s.sh [--version 30|31] [--text] [--map PATH] [--locations FILE] [--no-checks]\n' "$M3_MODE"
                 printf 'Sim always uses text. --no-checks skips hardware, memory and scan rates; readiness and amcl_settle remain required.\n'
                 return 0 ;;
             *) mode3_fail "unknown option: $1" ;;
         esac
         shift
     done
+    [[ "$M3_VERSION" == 30 || "$M3_VERSION" == 31 ]] || mode3_fail '--version must be 30 or 31'
+    [[ "$M3_MODE" != sim || "$M3_VERSION" == 30 ]] || mode3_fail 'use the real v31 entry point for saved-place navigation'
     if [[ "$M3_MODE" == real ]]; then
         printf 'SAFETY: Keep the power cut within reach. FlySky is off; there is no stick override.\n'
     fi
     M3_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) || mode3_fail 'cannot locate workspace'
     cd -- "$M3_ROOT" || mode3_fail "cannot enter $M3_ROOT"
+    local profile=mode3 bt=wheelchair_robust_nav_v5.xml offset=0.31984 color=true voice=vlm_nav.py
+    if [[ "$M3_VERSION" == 31 ]]; then
+        profile=mode2 bt=wheelchair_robust_nav_v3.xml offset=0.0 color=false voice=voice_nav.py
+    fi
+    [[ -n "$M3_MAP" ]] || M3_MAP="$M3_ROOT/maps/real_chair_indoor_2026-11-05_v2.yaml"
+    M3_PARAMS="$M3_ROOT/src/wheelchair_navigation/config/nav2_params_3cam_v${M3_VERSION}.yaml"
+    M3_BT="$M3_ROOT/src/wheelchair_navigation/behavior_tree/$bt"
+    [[ -r "$M3_MAP" && -r "$M3_PARAMS" && -r "$M3_BT" ]] || mode3_fail 'map, Nav2 parameters or behavior tree missing'
+    [[ "$M3_MODE" != real || -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] || mode3_fail 'run from a desktop terminal so RViz can open'
     mkdir -p logs || mode3_fail 'cannot create logs/'
     local stamp tool status pid file
     stamp=$(date +%Y%m%d_%H%M%S)_$$
-    M3_NAV_LOG="$M3_ROOT/logs/mode3_${M3_MODE}_nav_${stamp}.log"
-    M3_VOICE_LOG="$M3_ROOT/logs/mode3_${M3_MODE}_voice_${stamp}.log"
+    M3_NAV_LOG="$M3_ROOT/logs/${profile}_${M3_MODE}_nav_${stamp}.log"
+    M3_VOICE_LOG="$M3_ROOT/logs/${profile}_${M3_MODE}_voice_${stamp}.log"
     M3_CAMERA_LOG="$M3_ROOT/logs/mode3_real_cameras_${stamp}.log"
-    M3_NAV_PID_FILE="$M3_ROOT/logs/mode3_${M3_MODE}_nav.pid"
-    M3_VOICE_PID_FILE="$M3_ROOT/logs/mode3_${M3_MODE}_voice.pid"
+    M3_NAV_PID_FILE="$M3_ROOT/logs/${profile}_${M3_MODE}_nav.pid"
+    M3_VOICE_PID_FILE="$M3_ROOT/logs/${profile}_${M3_MODE}_voice.pid"
     M3_NAV_PID='' M3_VOICE_PID='' M3_TEE_PID='' M3_VOICE_FD=''
     export PATH="/usr/bin:$PATH"
     for tool in python3 curl setsid nohup env flock timeout rg tee; do
@@ -319,9 +347,9 @@ mode3_main() {
     fi
     mode3_pass "workspace sourced; ROS_DOMAIN_ID=$ROS_DOMAIN_ID; voice Python: $M3_ROOT/.venv-voice/bin/python"
     exec 9> "$M3_ROOT/logs/mode3.lock" || mode3_fail 'cannot open Mode 3 run lock'
-    flock -n 9 || mode3_fail 'another Mode 3 launcher holds logs/mode3.lock; stop it first'
+    flock -n 9 || mode3_fail 'another navigation/mapping launcher holds logs/mode3.lock; stop it first'
     # Refuse orphaned groups from a prior launcher; never signal a PID read from an old file.
-    for file in "$M3_ROOT"/logs/mode3_{real,sim}_{nav,voice}.pid; do
+    for file in "$M3_ROOT"/logs/mode{2,3}_{real,sim}_{nav,voice}.pid "$M3_ROOT"/logs/map_real_nav.pid; do
         [[ -f "$file" ]] || continue
         read -r pid < "$file" || mode3_fail "cannot read PID file $file"
         [[ "$pid" =~ ^[1-9][0-9]*$ ]] || mode3_fail "invalid PID file $file; inspect it before restarting"
@@ -346,10 +374,34 @@ mode3_main() {
     else
         printf 'SKIP hardware, memory and scan-rate checks: --no-checks was requested\n'
     fi
-    mode3_server
+    if [[ "$M3_VERSION" == 30 ]]; then
+        mode3_server
+    else
+        command -v ollama >/dev/null || mode3_fail 'Ollama is missing; install models before connecting the chair'
+        if ! curl --noproxy '*' --fail --silent --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null; then
+            nohup env --default-signal=INT,TERM setsid ollama serve >> logs/mode2_ollama.log 2>&1 < /dev/null 9>&- &
+            pid=$!
+            printf '%s\n' "$pid" > logs/mode2_ollama.pid
+            local deadline=$((SECONDS + 30))
+            until curl --noproxy '*' --fail --silent --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null; do
+                kill -0 "$pid" 2>/dev/null || mode3_fail 'Ollama exited; see logs/mode2_ollama.log'
+                (( SECONDS < deadline )) || mode3_fail 'Ollama startup timed out'
+                sleep 1
+            done
+        fi
+    fi
+    local -a prepare_args=()
+    [[ "$M3_VERSION" != 31 ]] || prepare_args=(--locations "$M3_LOCATIONS")
+    printf 'Preparing v%s local models; map=%s; Nav2=%s; BT=%s\n' "$M3_VERSION" "$M3_MAP" "$M3_PARAMS" "$M3_BT"
+    timeout --signal=TERM --kill-after=3s 180s "$M3_ROOT/.venv-voice/bin/python" -u \
+        "$M3_ROOT/scripts/prepare_voice_models.py" --version "$M3_VERSION" --mic "$M3_MIC" \
+        "${prepare_args[@]}" \
+        || mode3_fail 'local model preparation failed; no hardware launch was started'
     if [[ "$M3_MODE" == real ]]; then
         env --default-signal=INT,TERM setsid ros2 launch wheelchair_bringup wheelchair_fusion_nav.launch.py \
-            record_bag:=false front_color:=true axle_to_base:=0.31984 > "$M3_NAV_LOG" 2>&1 < /dev/null 9>&- &
+            record_bag:=false use_rviz:=true use_collision_monitor:=true \
+            "front_color:=$color" "axle_to_base:=$offset" "map_name:=$M3_MAP" \
+            "nav2_params:=$M3_PARAMS" "bt_xml:=$M3_BT" > "$M3_NAV_LOG" 2>&1 < /dev/null 9>&- &
     else
         env --default-signal=INT,TERM setsid ros2 launch wheelchair_description gazebo_sim.launch.py \
             world_name:=small_house use_rviz:=false nav2:=true bridge_camera:=true \
@@ -373,12 +425,12 @@ mode3_main() {
     mode3_ros_check
     status=$?
     (( status == 0 )) || mode3_fail "ROS check exited $status (124 means timeout); see the reason above and $M3_NAV_LOG"
-    if [[ "$M3_MODE" == real ]]; then
+    if [[ "$M3_MODE" == real && "$M3_VERSION" == 30 ]]; then
         python3 "$M3_ROOT/scripts/mode3_localization_check.py" || \
             mode3_fail 'Mode 3 localization settings do not match the tested base reference'
         python3 "$M3_ROOT/scripts/mode3_camera_check.py" || \
             mode3_fail 'front RGB/depth stream is not ready for Mode 3'
-    else
+    elif [[ "$M3_MODE" == sim ]]; then
         python3 "$M3_ROOT/scripts/mode3_camera_check.py" --sim || \
             mode3_fail 'sim RGB/depth stream is not ready for Mode 3'
     fi
@@ -391,17 +443,24 @@ mode3_main() {
         mode3_pass 'small_house uses the configured initial pose; no RViz pose input required'
     fi
     mode3_nav_alive
-    mode3_health || mode3_fail 'VLM /health stopped answering before voice startup'
+    if [[ "$M3_VERSION" == 30 ]]; then
+        mode3_health || mode3_fail 'VLM /health stopped answering before voice startup'
+    else
+        "$M3_ROOT/.venv-voice/bin/python" "$M3_ROOT/scripts/prepare_voice_models.py" \
+            --version 31 --mic false --locations "$M3_LOCATIONS" || mode3_fail 'saved places or Qwen3 model unavailable'
+    fi
     mode3_text_command
     printf 'Starting voice (mic=%s); wait for "Voice navigation ready.". Ctrl+C stops voice, then navigation.\nLog: %s\n' \
         "$M3_MIC" "$M3_VOICE_LOG"
     # Keep terminal output live, but isolate signals so the launcher controls shutdown order.
     exec {M3_VOICE_FD}> >(tee "$M3_VOICE_LOG" 9>&-)
     M3_TEE_PID=$!
+    local -a voice_args=()
+    [[ "$M3_VERSION" != 31 ]] || voice_args=(-p "locations:=$M3_LOCATIONS")
     env --default-signal=INT,TERM setsid "$M3_ROOT/.venv-voice/bin/python" -u \
-        "$M3_ROOT/src/wheelchair_description/scripts/vlm_nav.py" --ros-args \
+        "$M3_ROOT/src/wheelchair_description/scripts/$voice" --ros-args \
         -p "use_sim_time:=$([[ "$M3_MODE" == sim ]] && printf true || printf false)" \
-        -p "mic:=$M3_MIC" >&"$M3_VOICE_FD" 2>&1 < /dev/null 9>&- &
+        -p "mic:=$M3_MIC" "${voice_args[@]}" >&"$M3_VOICE_FD" 2>&1 < /dev/null 9>&- &
     M3_VOICE_PID=$!
     exec {M3_VOICE_FD}>&-
     printf '%s\n' "$M3_VOICE_PID" > "$M3_VOICE_PID_FILE" || mode3_fail 'cannot write voice PID file'
