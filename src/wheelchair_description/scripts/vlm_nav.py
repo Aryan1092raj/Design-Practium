@@ -1079,7 +1079,7 @@ def main():
     node = VoiceNav()
     # mic:=false takes commands only from /voice/transcript (sim bench: room speech became goals in m3_q)
     if node.declare_parameter("mic", True).value:
-        stt = WhisperModel("base.en", device="cpu", compute_type="int8")
+        stt = WhisperModel("base.en", device="cpu", compute_type="int8", local_files_only=True)
         threading.Thread(target=listen, args=(node, stt), daemon=True).start()
     threading.Thread(target=node.say, args=("Voice navigation ready.",), daemon=True).start()
     try:

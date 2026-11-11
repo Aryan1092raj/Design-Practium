@@ -186,6 +186,9 @@ def generate_launch_description():
         'hospital_mode', default_value='false',
         description='Hospital mapping: 25m lidar range + wider loop closure for spacious corridors. '
                     'Uses laser_filter_hospital.yaml + slam_toolbox_hospital_*.yaml configs.')
+    declare_session_manager = DeclareLaunchArgument(
+        'enable_session_manager', default_value='true',
+        description='Legacy auto-save/bag manager. map_real.sh saves before shutdown and disables this.')
 
     # Get launch configurations
     is_sim = LaunchConfiguration('is_sim')
@@ -849,7 +852,10 @@ def generate_launch_description():
                 output='screen',
             ),
         ],
-        condition=UnlessCondition(is_sim)
+        condition=IfCondition(PythonExpression([
+            "'", is_sim, "' == 'false' and '",
+            LaunchConfiguration('enable_session_manager'), "' == 'true'"
+        ]))
     )
 
     # ========================================================================
@@ -960,6 +966,7 @@ def generate_launch_description():
         declare_use_fused_slam,
         declare_dataset_mode,
         declare_hospital_mode,
+        declare_session_manager,
 
         # USB permissions (hardware only)
         permission_setup,

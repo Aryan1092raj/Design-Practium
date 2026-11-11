@@ -17,6 +17,7 @@ Text can also be injected for testing:
 import json
 import math
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -32,6 +33,7 @@ from nav_msgs.msg import Path
 from rapidfuzz import fuzz, process
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
@@ -289,17 +291,37 @@ def listen(node, stt):
 
 
 def main():
-    rclpy.init()
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = VoiceNav()
-    stt = WhisperModel("base.en", device="cuda", compute_type="float16")  # CPU int8 took seconds per command
-    threading.Thread(target=listen, args=(node, stt), daemon=True).start()
-    node.say("Voice navigation ready.")
+    stopping = threading.Event()
+    # An asynchronous KeyboardInterrupt inside a ROS action's pybind callback
+    # can surface as TypeError. Request shutdown and finish the callback instead.
+    previous_handlers = {sig: signal.signal(sig, lambda signum, frame: stopping.set())
+                         for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        rclpy.spin(node)
+        if node.declare_parameter("mic", True).value:
+            stt = WhisperModel("base.en", device="cuda", compute_type="float16", local_files_only=True)
+            if not stopping.is_set():
+                threading.Thread(target=listen, args=(node, stt), daemon=True).start()
+        if not stopping.is_set():
+            node.say("Voice navigation ready.")
+        while rclpy.ok() and not stopping.is_set():
+            rclpy.spin_once(node, timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
     finally:
+        # Keep the executor alive briefly so cancellation can reach Nav2 before
+        # the launcher stops the navigation process group. Drop queued places.
+        with node.lock:
+            node.next = None
+            node.cancel()
+        deadline = time.monotonic() + 2.0
+        while node.busy and rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.05)
+        node.destroy_node()
         rclpy.try_shutdown()
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":
