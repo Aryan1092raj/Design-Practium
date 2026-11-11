@@ -328,7 +328,7 @@ def generate_launch_description():
                     # (castor slip, 45 deg off after one trip), so fuse only
                     # forward velocity and let the IMU yaw integrate position.
                     "odom0_config": [False, False, False, False, False, False,
-                                     True, False, False, False, False, False,
+                                     True, True, False, False, False, False,
                                      False, False, False],
                     "use_sim_time": True}],
             )
@@ -476,6 +476,12 @@ def generate_launch_description():
         parameters=[nav2_params_file, nav2_sim_params, nav2_common],
         condition=IfCondition(nav2_localize),
     )
+    amcl_settle = Node(
+        package="wheelchair_description", executable="amcl_settle.py",
+        name="amcl_settle", output="screen",
+        parameters=[nav2_common],
+        condition=IfCondition(nav2_localize),
+    )
     nav2_lifecycle_manager = Node(
         package="nav2_lifecycle_manager", executable="lifecycle_manager",
         name="nav2_lifecycle_manager", output="screen",
@@ -493,7 +499,7 @@ def generate_launch_description():
     # activate, so the whole stack comes up on a timer rather than at t=0.
     nav2_startup = TimerAction(
         period=18.0,
-        actions=[map_server, amcl_node, controller_server, smoother_server,
+        actions=[map_server, amcl_node, amcl_settle, controller_server, smoother_server,
                  planner_server, behavior_server, bt_navigator,
                  velocity_smoother, waypoint_follower,
                  nav2_cmd_vel_bridge, nav2_lifecycle_manager],

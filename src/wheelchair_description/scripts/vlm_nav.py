@@ -3,22 +3,25 @@
 
 Listens on the laptop mic and turns speech into text with faster-whisper. The target is looked
 for in the front RGB-D camera with a VLM (Qwen3-VL 4B Instruct); if it is not in view, the chair turns
-in place 90 degrees at a time and looks again. If the full turn misses it, the VLM gets all four
+in place 60 degrees at a time and looks again. If the full turn misses it, the VLM gets all six
 views in one call and picks the one most likely to lead to the target (a doorway toward a
-kitchen when asked for a fridge); the chair drives a few metres that way and scans again, for up
-to 3 minutes. The bounding box plus the aligned depth give the object's position in the map, and
+kitchen when asked for a fridge); the chair drives to the reachable spot that shows the most
+floor it has not looked at yet, preferring that direction, and scans again, until the floor is
+covered or 10 minutes have passed. The bounding box plus the aligned depth give the object's position in the map, and
 the goal is a free spot within 1 m in front of it.
 Nav2 does all the driving; saying "stop" cancels the goal. Replies are printed and published on
 /voice/status (the real chair has no speaker).
 
-Needs nav launched with front_color:=true, scripts/vlm_server.sh running, and runs inside
+Needs nav launched with front_color:=true, src/wheelchair_description/scripts/vlm_server.sh running, and runs inside
 .venv-voice:
     ros2 run wheelchair_description vlm_nav.py
 Text can also be injected for testing:
     ros2 topic pub --once /voice/transcript std_msgs/String "{data: 'go to the bed'}"
 """
 import base64
+import json
 import math
+import os
 import re
 import threading
 import time
@@ -29,40 +32,53 @@ import rclpy
 import requests
 from action_msgs.msg import GoalStatus
 from faster_whisper import WhisperModel
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 from nav2_msgs.action import NavigateToPose, Spin
 from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, LaserScan
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
+from amcl_settle import is_stopped
 from voice_nav import mic_chunks, nav2_gone
 
-VLM_URL = "http://127.0.0.1:8091/v1/chat/completions"  # scripts/vlm_server.sh (Qwen3-VL 4B Instruct)
+VLM_URL = "http://127.0.0.1:8091/v1/chat/completions"  # src/wheelchair_description/scripts/vlm_server.sh (Qwen3-VL 4B Instruct)
 # Image size sent to the VLM; about 150 image tokens. Qwen3-VL answers boxes in 0-1000 relative
 # coordinates, which vlm() scales to this size.
 VLM_W, VLM_H = 448, 336
+# Generic household labels for the box check; the rider's target is added when missing, so the
+# search stays zero-shot. These are not map labels.
+CLASSES = ["bed", "sofa", "chair", "table", "desk", "wardrobe", "cabinet", "shelf", "refrigerator",
+           "oven", "sink", "counter", "door", "window", "television", "picture", "piano",
+           "dumbbell", "exercise bench", "exercise ball", "plant", "lamp", "bin", "wall", "floor",
+           "other"]
+# Labels the box check may not tell apart. The check exists to drop boxes on unrelated things
+# (portraits, doors), not to split near-synonyms: in m3_z and m3_aa the real wardrobe, seen
+# side-on as a plain wooden slab, was labelled "cabinet" 5 times and never reached.
+KIN = {"wardrobe": {"cabinet"}, "cabinet": {"wardrobe"}, "table": {"desk"}, "desk": {"table"}}
 CAMERAS = ["camera"]  # front D455 only; the side cameras run depth-only to save USB bandwidth
 # Chair centre to the object's near face, nearest first. The chair's front is 0.45 m ahead of its
 # centre, so with Nav2's 0.15 m goal tolerance the front stops within 1 m of the object. 0.7-0.85
 # alone left no free spot in front of the sim sofa (coffee table, 0.65 m inflation).
 STANDOFF = (0.8, 1.0, 1.2, 1.3)
-LOOKS = 4  # front view plus three 90-degree turns in place
-SEARCH_TIME = 180.0  # s; the search gives up after 3 minutes
-EXPLORE_STEP = 3.0  # m; how far each exploration drive goes at most
-BACKOFF = 0.7  # m; an exploration goal stops this far short of the first non-free cell
-MAX_RANGE = 4.0  # beyond this the depth is not trusted: drive along the bearing and look again
+# Looks per scan, turning 360/LOOKS degrees between them. Six, so views overlap: with four, an
+# object cut by the frame edge got the wrong label (m3_z: the wardrobe, half in view, "cabinet").
+LOOKS = 6
+# s. A scan plus the drive to it took about 50 s in sim, so 180 s allowed three spots: m3_t and
+# m3_u ran out one room short of the bed. The search also ends when no unseen floor is left.
+SEARCH_TIME = 600.0
+MAX_RANGE = 4.0  # beyond this the depth is not trusted: close in and look again
 APPROACHES = 4  # looks per command: the first, plus re-looks after driving toward a far sighting
 # The front camera (1.34 m up, 64 degree vertical FOV) sees the floor only beyond ~2.2 m, so a close-in
 # drive stops this far from a sighting; closer, a low object (a dumbbell) drops out of the frame.
 MIN_SIGHT = 2.5
 FREE_COST = 50  # global costmap cells below this count as free for a goal
-REVISIT = 1.0  # m; exploration skips goals this close to a spot already scanned for the command
 # The chair turns in place about its drive axle, 0.32 m behind base_link (urdf wheel joints;
 # Gazebo poses after four spins all sat within 6 cm of one axle point). Goals keep lethal cells
 # TURN_CLEAR from the axle: the padded front corner (0.80, 0.38) from it sweeps 0.89 m, plus
@@ -100,6 +116,30 @@ def to_matrix(tf):
                   [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
                   [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
     return r, np.array([t.x, t.y, t.z])
+
+
+def turn_obstacles(grid, res, cleared=None):
+    """Only small lethal blobs seen as free in three fresh scans may be discarded.
+    Size alone cannot distinguish a one-cell pole from a stale lidar mark."""
+    solid = (grid < 0) | (grid == 100)
+    if cleared is not None:
+        _, labels, stats, _ = cv2.connectedComponentsWithStats((grid == 100).astype(np.uint8), 8)
+        small = np.isin(labels, 1 + np.flatnonzero(stats[1:, cv2.CC_STAT_AREA] * res * res <= 0.0016))
+        solid &= ~(small & cleared)
+    return solid
+
+
+def obstacle_mask(node, m, grid=None):
+    revision = getattr(node, "_noise_revision", 0)
+    cached = getattr(node, "_obstacles", None)
+    if grid is None and cached is not None and cached[0] is m and cached[1] == revision:
+        return cached[2]
+    if grid is None:
+        grid = np.asarray(m.data, np.int16).reshape(m.info.height, m.info.width)
+    counts = getattr(node, "_clear_counts", None)
+    solid = turn_obstacles(grid, m.info.resolution, counts >= 3 if counts is not None else None)
+    node._obstacles = m, revision, solid
+    return solid
 
 
 class VoiceNav(Node):

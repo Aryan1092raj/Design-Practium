@@ -228,6 +228,14 @@ def generate_launch_description():
         condition=IfCondition(use_collision_monitor),
     )
 
+    amcl_settle = Node(
+        package='wheelchair_description',
+        executable='amcl_settle.py',
+        name='amcl_settle',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+    )
+
     topic_data_logger = Node(
         package='scripts',
         executable='topic_data_logger',
@@ -302,6 +310,7 @@ def generate_launch_description():
             smoother_server,
             velocity_smoother,
             waypoint_follower,
+            amcl_settle,
         ]
     )
 
