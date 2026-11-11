@@ -154,23 +154,133 @@ class VoiceNav(Node):
                                          lambda m, c=cam, k=key: self.frames[c].__setitem__(k, m),
                                          qos_profile_sensor_data)
         self.costmap = None
+        self._clear_counts = None
+        self._clear_key = None
+        self._clear_stamp = None
+        self._noise_revision = 0
         self.create_subscription(OccupancyGrid, "/global_costmap/costmap",
-                                 lambda m: setattr(self, "costmap", m),
+                                 self.on_costmap,
                                  QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(String, "/voice/transcript", lambda m: self.on_text(m.data), 10)
         self.status = self.create_publisher(String, "/voice/status", 10)
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)
+        scan_topic = self.declare_parameter("scan_topic", "/scan" if self.get_parameter(
+            "use_sim_time").value else "/scan_fused").value
+        self.create_subscription(LaserScan, scan_topic, self.on_scan, qos_profile_sensor_data)
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.spin_client = ActionClient(self, Spin, "spin")
         self.goal_handle = None
+        self.goal_response = None
+        self.goal_lock = threading.Lock()
+        self.command_deadline = None
+        self.stopped_since = None
+        cmd_vel_topic = self.declare_parameter("cmd_vel_topic", "/wc_control/cmd_vel").value
+        self.create_subscription(TwistStamped, cmd_vel_topic, self.on_cmd_vel, qos_profile_sensor_data)
         self.busy = False
         self.cancelled = threading.Event()
 
+    def now(self):
+        """Node clock in seconds. Search limits count chair time: Gazebo ran at 0.6x real time in
+        m3_t, so a wall-clock 3 minutes gave the chair under 2."""
+        return self.get_clock().now().nanoseconds / 1e9
+
+    def on_cmd_vel(self, msg):
+        if not is_stopped(msg.twist):
+            self.stopped_since = None
+        elif self.stopped_since is None:
+            self.stopped_since = self.now()
+
+    def wait_localization(self):
+        """At least 3.5 s of stopped command on the node clock; repeated reads add no delay."""
+        while not self.cancelled.is_set():
+            now = self.now()
+            if self.command_deadline is not None and now >= self.command_deadline:
+                return False
+            if self.stopped_since is not None and now - self.stopped_since >= 3.5:
+                return True
+            self.cancelled.wait(0.05)
+        return False
+
     # ---- speech out / commands in -------------------------------------------------------
     def say(self, text):
+        if "can't get closer" in text or "can't find a free spot" in text:
+            self.dump_costmap(text)
         self.get_logger().info(text)
         self.status.publish(String(data=text))
+
+    def dump_costmap(self, reason):
+        dump, m = os.environ.get("VLM_NAV_DUMP"), self.costmap
+        if not dump or m is None:
+            return
+        try:
+            os.makedirs(dump, exist_ok=True)
+            stem = os.path.join(dump, f"costmap_{int(self.now())}_{time.time_ns()}")
+            np.save(stem + ".npy", np.asarray(m.data, np.int16).reshape(m.info.height, m.info.width))
+            if self._clear_counts is not None:
+                np.savez_compressed(stem + "_turn.npz", clear_counts=self._clear_counts)
+            with open(stem + ".json", "w") as f:
+                json.dump({"reason": reason, "time": self.now(), "pose": self.pose(),
+                           "resolution": m.info.resolution,
+                           "origin": [m.info.origin.position.x, m.info.origin.position.y],
+                           "sighting": getattr(self, "_last_sighting", None)}, f)
+        except (OSError, ValueError) as e:
+            self.get_logger().warn(f"costmap dump: {e}")
+
+    def on_costmap(self, m):
+        res, h, w = m.info.resolution, m.info.height, m.info.width
+        key = (res, h, w, m.info.origin.position.x, m.info.origin.position.y)
+        grid = np.asarray(m.data, np.int16).reshape(h, w)
+        if self._clear_key != key:
+            self._clear_counts = np.zeros((h, w), np.uint8)
+            self._clear_key, self._clear_stamp = key, None
+        else:
+            previous = np.asarray(self.costmap.data, np.int16).reshape(h, w)
+            self._clear_counts[(grid == 100) & (previous != 100)] = 0  # a new pole is unconfirmed
+        _, labels, stats, _ = cv2.connectedComponentsWithStats((grid == 100).astype(np.uint8), 8)
+        small = np.isin(labels, 1 + np.flatnonzero(stats[1:, cv2.CC_STAT_AREA] * res * res <= 0.0016))
+        self._tiny_cells = np.column_stack(np.nonzero(small))
+        self.costmap = m
+
+    def on_scan(self, msg):
+        """Clear stale tiny marks only where fresh rays pass through, not behind an occluder.
+        A return within 10 cm, a beam gap, missing TF or an unseen pole keeps the obstacle."""
+        if self.costmap is None or self._clear_counts is None or not len(self._tiny_cells):
+            return
+        stamp = Time.from_msg(msg.header.stamp)
+        if self._clear_stamp is not None and stamp.nanoseconds <= self._clear_stamp:
+            return
+        if abs(self.get_clock().now().nanoseconds - stamp.nanoseconds) > 1e9:
+            return
+        try:
+            r, t = to_matrix(self.tf.lookup_transform("map", msg.header.frame_id, stamp))
+        except Exception:  # no transform means no evidence that a pole's cell is empty
+            return
+        self._clear_stamp = stamp.nanoseconds
+        res, h, w, ox, oy = self._clear_key
+        jj, ii = self._tiny_cells.T
+        xy = np.column_stack((ox + (ii + 0.5) * res, oy + (jj + 0.5) * res)) - t[:2]
+        yaw = math.atan2(r[1, 0], r[0, 0])
+        x, y = xy[:, 0] * math.cos(yaw) + xy[:, 1] * math.sin(yaw), -xy[:, 0] * math.sin(yaw) + xy[:, 1] * math.cos(yaw)
+        angle, distance = np.arctan2(y, x), np.hypot(x, y)
+        ranges = np.asarray(msg.ranges)
+        if len(ranges) < 3 or msg.angle_increment <= 0:
+            return
+        beam = np.rint((angle - msg.angle_min) / msg.angle_increment).astype(int)
+        inside = (beam > 0) & (beam < len(ranges) - 1)
+        beam = np.clip(beam, 1, len(ranges) - 2)
+        valid = np.isfinite(ranges) & (ranges > msg.range_min) & (ranges <= msg.range_max)
+        ranges = np.where(valid, ranges, 0.0)
+        reach = np.minimum.reduce((ranges[beam - 1], ranges[beam], ranges[beam + 1]))
+        lateral = distance * np.abs(np.sin(angle - msg.angle_min - beam * msg.angle_increment))
+        observed = inside & (lateral <= res / 2) & (distance > msg.range_min) & (reach > 0)
+        free = observed & (distance + 0.10 < reach)
+        blocked = inside & (reach > 0) & (reach <= distance + 0.10)
+        old = self._clear_counts[jj, ii]
+        new = np.where(blocked, 0, np.where(free, np.minimum(old + 1, 3), old))
+        self._clear_counts[jj, ii] = new
+        if np.any((old >= 3) != (new >= 3)):
+            self._noise_revision += 1
 
     def on_text(self, text):
         t = text.lower()
@@ -500,16 +610,32 @@ class VoiceNav(Node):
         return [x1, y1, x2, y2] if answer.startswith("yes") else None
 
     def standoff(self, obj, chair):
-        """First free spot short of the object, trying wider angles and distances."""
+        """Reachable standoff on any side, trying the chair's side first."""
+        c = self.coverage(chair)
+        if c is None:
+            return None
+        res, h, w, ox, oy = c["key"]
         base = math.atan2(*(obj - chair)[::-1])
-        for dist in STANDOFF:
-            for dth in (0.0, 0.5, -0.5, 1.0, -1.0):
-                a = base + dth
-                g = obj - dist * np.array([math.cos(a), math.sin(a)])
-                # room to turn in place: a cost-30 goal 0.66 m from the sim bed's corner trapped
-                # the chair (spin and backup both "Collision Ahead")
-                if self.clear(g, a):
-                    return g[0], g[1], a  # yaw a faces the object
+        offsets = np.arange(0, 2 * math.pi, 0.25)
+        offsets = np.arctan2(np.sin(offsets), np.cos(offsets))
+        offsets = offsets[np.argsort(np.abs(offsets), kind="stable")]
+        # The chair's side (the old +/-1 rad sweep) first, nearest distance first; the far side
+        # only when that fails, or a closer spot behind the object sends the chair round it.
+        near = np.abs(offsets) <= 1.0
+        for dth, dist in [(o, d) for side in (offsets[near], offsets[~near])
+                          for d in STANDOFF for o in side]:
+            a = base + dth
+            g = obj - dist * np.array([math.cos(a), math.sin(a)])
+            i, j = math.floor((g[0] - ox) / res), math.floor((g[1] - oy) / res)
+            # room to turn in place: a cost-30 goal 0.66 m from the sim bed's corner trapped
+            # the chair (spin and backup both "Collision Ahead")
+            # the object must be in plain view from the spot: a reachable, clear spot on the far
+            # side of a partition would report arrival from the next room
+            sight = all(self.cost(g + (obj - g) * t) != 100
+                        for t in np.arange(0, max(dist - 0.3, 0), res / 2) / dist)
+            if (0 <= i < w and 0 <= j < h and np.isfinite(c["path"][j, i]) and sight
+                    and self.clear(g, a)):
+                return g[0], g[1], a  # yaw a faces the object
         return None
 
     def near_face(self, chair, obj):
@@ -533,11 +659,16 @@ class VoiceNav(Node):
         Lethal only: also rejecting inscribed cells added 0.35 m, so in m3_n no standoff passed
         next to the sofa.
         shortcut: Nav2 ignores goal yaw, so this assumes the chair arrives facing yaw (the drive
-        or approach direction); check the real arrival heading if a goal still traps it."""
+        or approach direction); check the real arrival heading if a goal still traps it.
+        face() checks the actual arrival pose and heading before the final spin."""
         res = self.costmap.info.resolution
         n = round(r / res)
         cx, cy =p[0] - AXLE_BACK * math.cos(yaw), p[1] - AXLE_BACK * math.sin(yaw)
-        return all(0 <= self.cost((cx + i * res, cy + j * res)) < 100
+        m = self.costmap
+        solid = obstacle_mask(self, m)
+        i0 = math.floor((cx - m.info.origin.position.x) / res)
+        j0 = math.floor((cy - m.info.origin.position.y) / res)
+        return all(0 <= i0 + i < m.info.width and 0 <= j0 + j < m.info.height and not solid[j0 + j, i0 + i]
                    for i in range(-n, n + 1) for j in range(-n, n + 1) if i * i + j * j <= n * n)
 
     def cost(self, p):
