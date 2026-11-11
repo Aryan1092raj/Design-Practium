@@ -181,6 +181,11 @@ def generate_launch_description():
         description='Topic the wheel bridge drives from. The nav launch sets /cmd_vel_safe when the collision monitor is on.'
     )
 
+    declare_axle_to_base = DeclareLaunchArgument(
+        'axle_to_base', default_value='0.0',
+        description='ZUPT output reference shift from wheel axle to base_link (metres).'
+    )
+
     # Get launch configurations
     is_sim = LaunchConfiguration('is_sim')
     map_name = LaunchConfiguration('map_name')
@@ -190,6 +195,13 @@ def generate_launch_description():
     use_fused_scan = LaunchConfiguration('use_fused_scan')
     use_custom_fusion = LaunchConfiguration('use_custom_fusion')
     use_zupt = LaunchConfiguration('use_zupt')
+    axle_to_base = LaunchConfiguration('axle_to_base')
+    # Omni supports the sideways swing of a forward-offset base frame. It
+    # changes the estimator, not the differential wheel command interface.
+    motion_model = ParameterValue(PythonExpression([
+        "'nav2_amcl::OmniMotionModel' if float('", axle_to_base,
+        "') > 0 and '", use_zupt, "' == 'true' else 'nav2_amcl::DifferentialMotionModel'"
+    ]), value_type=str)
 
     # ========================================================================
     # USB PERMISSIONS SETUP
@@ -542,6 +554,7 @@ def generate_launch_description():
                     'odom_frame': 'odom',
                     'base_frame': 'base_link',
                     'publish_tf': True,
+                    'axle_to_base': ParameterValue(axle_to_base, value_type=float),
                     # Wheel calibration
                     'wheel_radius_L': 0.1524,
                     'wheel_radius_R': 0.1524,
@@ -598,6 +611,7 @@ def generate_launch_description():
                 parameters=[
                     amcl_config,
                     {'use_sim_time': LaunchConfiguration('use_sim_time')},
+                    {'robot_model_type': motion_model},
                     {'scan_topic': '/scan_fused'},  # Override to use fused scan
                 ],
             )
@@ -619,6 +633,7 @@ def generate_launch_description():
                 parameters=[
                     amcl_config,
                     {'use_sim_time': LaunchConfiguration('use_sim_time')},
+                    {'robot_model_type': motion_model},
                     {'scan_topic': '/scan_filtered'},  # Use filtered scan
                 ],
             )
@@ -733,6 +748,7 @@ def generate_launch_description():
         declare_use_fused_scan,
         declare_use_custom_fusion,
         declare_use_zupt,
+        declare_axle_to_base,
         declare_cmd_vel_in,
 
         # USB permissions (hardware only)

@@ -1,6 +1,8 @@
 <?xml version="1.0"?>
 <robot name="wheelchair_description" xmlns:xacro="http://ros.org/wiki/xacro">
   
+  <xacro:include filename="$(find wheelchair_description)/urdf/sim_contacts.xacro" />
+
   <!-- Main Wheels - High friction for traction -->
   <gazebo reference="left_wheel">
     <mu1>10.0</mu1>

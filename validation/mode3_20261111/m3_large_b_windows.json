@@ -1,0 +1,241 @@
+[
+  {
+    "obj": "table",
+    "counted": true,
+    "t0": 1794412807.067202,
+    "t_end": 1794412824.7172828,
+    "verdict": "Arrived at the table.",
+    "ray_gap": "centre-to-obstacle-ahead=0.92 m (front gap 0.47 m)",
+    "front_gap": 0.44870833704912894,
+    "bearing_error": 3.7628515001795977,
+    "amcl_error": 0.021955592660518646,
+    "gazebo": [
+      -0.2771029611803866,
+      2.949279132764719,
+      1.8719075463732584
+    ],
+    "amcl": [
+      -0.2984592954711826,
+      2.9441845243661873,
+      1.8817404408024148
+    ],
+    "steps": 0,
+    "instance_measurements": [
+      {
+        "instance": "BalconyTable_01_001",
+        "front_gap": 0.44870833704912894,
+        "bearing_error": 3.7628515001795977,
+        "geometry_pass": true
+      },
+      {
+        "instance": "CoffeeTable_01_001",
+        "front_gap": 4.944320630490219,
+        "bearing_error": 176.25223536193175,
+        "geometry_pass": false
+      },
+      {
+        "instance": "KitchenTable_01_001",
+        "front_gap": 6.396057965174156,
+        "bearing_error": 123.55962708253087,
+        "geometry_pass": false
+      }
+    ],
+    "matched_instance": "BalconyTable_01_001"
+  },
+  {
+    "obj": "chair",
+    "counted": true,
+    "t0": 1794412824.719383,
+    "t_end": 1794412839.8018296,
+    "verdict": "Arrived at the chair.",
+    "ray_gap": "centre-to-obstacle-ahead=1.70 m (front gap 1.25 m)",
+    "front_gap": 0.5809085646282721,
+    "bearing_error": 32.7172157375448,
+    "amcl_error": 0.027105111002971524,
+    "gazebo": [
+      -0.8974749363240828,
+      3.0519175891687484,
+      2.570641232479763
+    ],
+    "amcl": [
+      -0.9245741001906767,
+      3.051349821421423,
+      2.5764802839662315
+    ],
+    "steps": 0,
+    "instance_measurements": [
+      {
+        "instance": "ChairD_01_001",
+        "front_gap": 0.5809085646282721,
+        "bearing_error": 32.7172157375448,
+        "geometry_pass": true
+      },
+      {
+        "instance": "ChairD_01_002",
+        "front_gap": 1.4317143140496764,
+        "bearing_error": 106.4733203771799,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_005",
+        "front_gap": 6.865808376992246,
+        "bearing_error": 41.46601237805476,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_003",
+        "front_gap": 7.251400441292622,
+        "bearing_error": 158.42538159893203,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_002",
+        "front_gap": 7.816909226154144,
+        "bearing_error": 168.8970099937707,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_004",
+        "front_gap": 8.18012103127236,
+        "bearing_error": 157.21183252742028,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_001",
+        "front_gap": 8.633045412540685,
+        "bearing_error": 166.8267815150453,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairD_01_003",
+        "front_gap": 10.179060710383295,
+        "bearing_error": 78.40308873447833,
+        "geometry_pass": false
+      }
+    ],
+    "matched_instance": "ChairD_01_001"
+  },
+  {
+    "obj": "door",
+    "counted": true,
+    "t0": 1794412839.805864,
+    "t_end": 1794412861.7902787,
+    "verdict": "Arrived at the door.",
+    "ray_gap": "centre-to-obstacle-ahead=0.86 m (front gap 0.41 m)",
+    "front_gap": 0.4010014843609957,
+    "bearing_error": 3.5760325535837514,
+    "amcl_error": 0.017711349066668266,
+    "gazebo": [
+      -1.5662448294571274,
+      2.846078605260862,
+      3.009127420580724
+    ],
+    "amcl": [
+      -1.5716436749294558,
+      2.829210162732659,
+      3.0133500459264764
+    ],
+    "steps": 0,
+    "instance_measurements": [
+      {
+        "instance": "FoldingDoor_01_001",
+        "front_gap": 0.4010014843609957,
+        "bearing_error": 3.5760325535837514,
+        "geometry_pass": true
+      },
+      {
+        "instance": "FoldingDoor_01_002",
+        "front_gap": 5.7193159211571745,
+        "bearing_error": 89.05706399763596,
+        "geometry_pass": false
+      },
+      {
+        "instance": "FoldingDoor_02_001",
+        "front_gap": 6.632556485858606,
+        "bearing_error": 171.86002682296157,
+        "geometry_pass": false
+      },
+      {
+        "instance": "FoldingDoor_02_002",
+        "front_gap": 9.986837774077545,
+        "bearing_error": 139.21048199942922,
+        "geometry_pass": false
+      },
+      {
+        "instance": "Door_01_001",
+        "front_gap": 11.251868981338562,
+        "bearing_error": 137.92987058104634,
+        "geometry_pass": false
+      }
+    ],
+    "matched_instance": "FoldingDoor_01_001"
+  },
+  {
+    "obj": "refrigerator",
+    "counted": true,
+    "t0": 1794412861.7919745,
+    "t_end": 1794412951.9058707,
+    "verdict": "Arrived at the refrigerator.",
+    "ray_gap": "centre-to-obstacle-ahead=1.64 m (front gap 1.19 m)",
+    "front_gap": 0.5843982748875769,
+    "bearing_error": 32.832850773466944,
+    "amcl_error": 0.014018258757340587,
+    "gazebo": [
+      7.779711817312928,
+      -2.2662012547572528,
+      0.35508471189085905
+    ],
+    "amcl": [
+      7.765875204582747,
+      -2.2684506383934364,
+      0.3569883660384485
+    ],
+    "steps": 0,
+    "instance_measurements": [
+      {
+        "instance": "Refrigerator_01_001",
+        "front_gap": 0.5843982748875769,
+        "bearing_error": 32.832850773466944,
+        "geometry_pass": true
+      }
+    ],
+    "matched_instance": "Refrigerator_01_001"
+  },
+  {
+    "obj": "television",
+    "counted": true,
+    "t0": 1794412951.9086015,
+    "t_end": 1794413537.8796728,
+    "verdict": "I see the television, but I can't get closer to it.",
+    "ray_gap": "",
+    "front_gap": null,
+    "bearing_error": null,
+    "amcl_error": 0.004933689489433178,
+    "gazebo": [
+      3.991502607057779,
+      -1.3476460795793908,
+      -2.7015396440955226
+    ],
+    "amcl": [
+      3.986962057901283,
+      -1.3495760291475372,
+      -2.701991584207784
+    ],
+    "steps": 4,
+    "instance_measurements": [
+      {
+        "instance": "TV_01_001",
+        "front_gap": 4.396635474714013,
+        "bearing_error": 26.631739198065052,
+        "geometry_pass": false
+      },
+      {
+        "instance": "TV_02_001",
+        "front_gap": 9.151146666622521,
+        "bearing_error": 24.764356120882614,
+        "geometry_pass": false
+      }
+    ],
+    "matched_instance": "TV_01_001"
+  }
+]

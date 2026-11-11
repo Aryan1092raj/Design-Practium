@@ -266,6 +266,10 @@ class ZUPTNode(Node):
         # Frame IDs
         self.odom_frame = self.get_parameter('odom_frame').value
         self.base_frame = self.get_parameter('base_frame').value
+        self.axle_to_base = self.get_parameter('axle_to_base').value
+        if not math.isfinite(self.axle_to_base) or not 0.0 <= self.axle_to_base <= 1.0:
+            raise ValueError('axle_to_base must be a finite offset between 0 and 1 m')
+        self.get_logger().info(f'Wheel axle to {self.base_frame}: {self.axle_to_base:.5f} m')
 
         # Subscribers
         self.imu_sub = self.create_subscription(
@@ -320,6 +324,9 @@ class ZUPTNode(Node):
         # Frames
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
+        # Mode 3 explicitly supplies the measured URDF offset. The integrator
+        # remains axle-based; only published pose, twist, covariance and TF shift.
+        self.declare_parameter('axle_to_base', 0.0)
 
         # Wheel parameters
         self.declare_parameter('wheel_radius_L', 0.1524)
@@ -388,6 +395,10 @@ class ZUPTNode(Node):
             is_stationary = self.filter.is_stationary
             gyro_bias = self.filter.gyro_bias
 
+        offset = self.axle_to_base
+        x += offset * math.cos(theta)
+        y += offset * math.sin(theta)
+
         # === Odometry message ===
         odom_msg = Odometry()
         odom_msg.header.stamp = stamp
@@ -411,8 +422,18 @@ class ZUPTNode(Node):
             0, 0, 0, 0, 1e6, 0,
             0, 0, 0, 0, 0, base_rot_cov,
         ]
+        # Propagate yaw uncertainty through x_base=x_axle+d*cos(yaw),
+        # y_base=y_axle+d*sin(yaw), including position/yaw cross terms.
+        jx, jy = -offset * math.sin(theta), offset * math.cos(theta)
+        covariance = odom_msg.pose.covariance
+        covariance[0] += jx * jx * base_rot_cov
+        covariance[7] += jy * jy * base_rot_cov
+        covariance[1] = covariance[6] = jx * jy * base_rot_cov
+        covariance[5] = covariance[30] = jx * base_rot_cov
+        covariance[11] = covariance[31] = jy * base_rot_cov
 
         odom_msg.twist.twist.linear.x = v_x
+        odom_msg.twist.twist.linear.y = offset * omega
         odom_msg.twist.twist.angular.z = omega
 
         odom_msg.twist.covariance = [
@@ -423,6 +444,8 @@ class ZUPTNode(Node):
             0, 0, 0, 0, 1e6, 0,
             0, 0, 0, 0, 0, 0.02,
         ]
+        odom_msg.twist.covariance[7] += offset * offset * 0.02
+        odom_msg.twist.covariance[11] = odom_msg.twist.covariance[31] = offset * 0.02
 
         self.odom_pub.publish(odom_msg)
 

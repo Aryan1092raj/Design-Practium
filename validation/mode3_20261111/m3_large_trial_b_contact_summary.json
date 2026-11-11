@@ -1,0 +1,26 @@
+{
+  "expected_collision_sensors": 14,
+  "advertised_collision_sensors": 14,
+  "requests": [
+    {
+      "target": "chair",
+      "contact_coverage": true,
+      "obstacle_contacts": 0,
+      "support_messages": 27964,
+      "max_heartbeat_gap_s": 1.1265332698822021,
+      "sampled_map_overlaps": 0,
+      "footprint_samples": 851,
+      "contact_clear": true
+    },
+    {
+      "target": "door",
+      "contact_coverage": true,
+      "obstacle_contacts": 0,
+      "support_messages": 7358,
+      "max_heartbeat_gap_s": 1.1192831993103027,
+      "sampled_map_overlaps": 0,
+      "footprint_samples": 227,
+      "contact_clear": true
+    }
+  ]
+}

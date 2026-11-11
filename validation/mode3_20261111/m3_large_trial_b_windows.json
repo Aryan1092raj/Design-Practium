@@ -1,0 +1,130 @@
+[
+  {
+    "obj": "chair",
+    "counted": true,
+    "t0": 1794414965.585855,
+    "t_end": 1794415069.020772,
+    "verdict": "Arrived at the chair.",
+    "ray_gap": "centre-to-obstacle-ahead=1.76 m (front gap 1.31 m)",
+    "front_gap": 0.5686789623782584,
+    "bearing_error": 16.15344394075549,
+    "amcl_error": 0.028355498352660127,
+    "gazebo": [
+      5.317536863033861,
+      -0.6770957587672474,
+      0.48510088626665404
+    ],
+    "amcl": [
+      5.295894923614408,
+      -0.6954168052709936,
+      0.4805020634546046
+    ],
+    "steps": 0,
+    "instance_measurements": [
+      {
+        "instance": "ChairA_01_002",
+        "front_gap": 0.5686789623782584,
+        "bearing_error": 16.15344394075549,
+        "geometry_pass": true
+      },
+      {
+        "instance": "ChairA_01_001",
+        "front_gap": 1.2564980326242035,
+        "bearing_error": 1.5050910141472622,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_003",
+        "front_gap": 1.9202019239545,
+        "bearing_error": 44.57755251887359,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_004",
+        "front_gap": 2.179753391830127,
+        "bearing_error": 26.53911335911066,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairD_01_002",
+        "front_gap": 6.7072519381143145,
+        "bearing_error": 108.44930209162787,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairD_01_001",
+        "front_gap": 8.071179092226291,
+        "bearing_error": 116.67793027030372,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_005",
+        "front_gap": 13.927935339019392,
+        "bearing_error": 141.39923628872043,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairD_01_003",
+        "front_gap": 14.18651544468503,
+        "bearing_error": 167.91880934336,
+        "geometry_pass": false
+      }
+    ],
+    "matched_instance": "ChairA_01_002"
+  },
+  {
+    "obj": "door",
+    "counted": true,
+    "t0": 1794415069.025384,
+    "t_end": 1794415096.5511596,
+    "verdict": "Arrived at the door.",
+    "ray_gap": "centre-to-obstacle-ahead=2.48 m (front gap 2.03 m)",
+    "front_gap": 0.9429996654767873,
+    "bearing_error": 41.87169980104071,
+    "amcl_error": 0.022617746178697846,
+    "gazebo": [
+      4.300179647972996,
+      0.7899913233063461,
+      2.0381194441942445
+    ],
+    "amcl": [
+      4.291155764809848,
+      0.7692517000006577,
+      2.0318534828378128
+    ],
+    "steps": 0,
+    "instance_measurements": [
+      {
+        "instance": "FoldingDoor_02_001",
+        "front_gap": 0.9429996654767873,
+        "bearing_error": 41.87169980104071,
+        "geometry_pass": true
+      },
+      {
+        "instance": "FoldingDoor_02_002",
+        "front_gap": 5.6025997012507185,
+        "bearing_error": 159.18225300679146,
+        "geometry_pass": false
+      },
+      {
+        "instance": "FoldingDoor_01_001",
+        "front_gap": 6.510759529087105,
+        "bearing_error": 59.799734517313695,
+        "geometry_pass": false
+      },
+      {
+        "instance": "Door_01_001",
+        "front_gap": 6.809988925330958,
+        "bearing_error": 164.05689002212628,
+        "geometry_pass": false
+      },
+      {
+        "instance": "FoldingDoor_01_002",
+        "front_gap": 7.636871592560399,
+        "bearing_error": 91.35789710135276,
+        "geometry_pass": false
+      }
+    ],
+    "matched_instance": "FoldingDoor_02_001"
+  }
+]

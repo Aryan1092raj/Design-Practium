@@ -5,17 +5,20 @@
 # sim-only values below win over the real-robot ones. The real config is never
 # edited: it stays exactly as it is on the robot.
 #
-# Only three things differ between the robot and Gazebo:
+# Simulation differences from the real launch:
 #   1. time - Gazebo publishes /clock, so every node needs use_sim_time: true.
 #      The real config hardcodes false everywhere (wall clock, no /clock).
 #   2. the laser topic - on the robot the costmaps, AMCL and the collision monitor read /scan_fused,
 #      which is produced by the 3x RealSense fusion pipeline. That pipeline does
 #      not run in Gazebo, so the raw bridged /scan is used instead.
-#   3. footprint - the robot is 0.45 x 0.35 m, but the Gazebo collision box of
-#      wc_gazebo.xacro is slightly different, so the sim uses the URDF value.
+#   3. localization - sim EKF uses axle-corrected lateral velocity, with Omni AMCL.
+#      Real Mode 3 uses corrected ZUPT output and the same AMCL motion model.
+#   4. safety map - the Mode 3 script loads small_house_clearance.yaml, including
+#      collision geometry to 2.1 m; it also enables native contact telemetry.
+#      Footprint and velocity limits are inherited from v30 for both runs.
 #
-# Everything else (planner, controller, velocity limits, inflation radius) is
-# inherited from the real config, so behaviour in the sim matches the robot.
+# The planner, controller, footprint and velocity limits are inherited. The
+# simulation inflation radius below remains 0.65 m, as documented in AGENTS.md.
 #
 # Usage:
 #   ros2 launch wheelchair_description gazebo_sim.launch.py nav2:=true
@@ -25,6 +28,11 @@ amcl:
   ros__parameters:
     use_sim_time: true
     scan_topic: /scan
+    # base_link is 0.32 m ahead of the axle, so a spin includes lateral motion.
+    # The differential model decomposes that swing into two near-90-degree
+    # rotations, injecting ~0.49 m/rad noise per scan at the existing alphas.
+    # Match axle-corrected sim odometry; the Mode 3 real launcher also shifts ZUPT.
+    robot_model_type: "nav2_amcl::OmniMotionModel"
 
 bt_navigator:
   ros__parameters:

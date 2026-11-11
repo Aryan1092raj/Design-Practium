@@ -95,6 +95,11 @@
 #   max_velocity, the real-chair cruise for every mode (at 0.50 the real
 #   chair's map pose ran ahead of it). Accel 0.40, decel -0.50 and angular
 #   limits stay as above; FollowPathReverse is unchanged.
+# CHANGES 2026-11-11 (Mode 3 hardware preparation):
+#   CAD body x=[-0.562, 0.678] m exceeded the old +/-0.45 m rectangle.
+#   Costmap footprints now enclose it at x=[-0.57, 0.69], y=+/-0.50 m (including the castors),
+#   with existing 0.03 m padding. StopZone, SlowdownZone and FootprintApproach enclose
+#   the same body. VLM turn clearance is 1.32 m about the drive axle.
 # CHANGES 2026-11-11 (Mode 3 review):
 #   1. SmacPlanner2D allow_unknown true -> false, matching coverage BFS so
 #      exploration routes stay on mapped floor.
@@ -286,7 +291,7 @@ local_costmap:
       width: 5
       height: 5
       resolution: 0.05
-      footprint: "[[0.45, 0.35], [0.45, -0.35], [-0.45, -0.35], [-0.45, 0.35]]"
+      footprint: "[[0.69, 0.50], [0.69, -0.50], [-0.57, -0.50], [-0.57, 0.50]]"
       footprint_padding: 0.03
       transform_tolerance: 1.0
       plugins: ["obstacle_layer", "inflation_layer"]
@@ -331,7 +336,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       use_sim_time: false
-      footprint: "[[0.45, 0.35], [0.45, -0.35], [-0.45, -0.35], [-0.45, 0.35]]"
+      footprint: "[[0.69, 0.50], [0.69, -0.50], [-0.57, -0.50], [-0.57, 0.50]]"
       footprint_padding: 0.03
       resolution: 0.05
       track_unknown_space: true
@@ -496,14 +501,14 @@ collision_monitor:
     polygons: ["StopZone", "SlowdownZone", "FootprintApproach"]
     StopZone:
       type: "polygon"
-      points: "[[0.55, 0.42], [0.55, -0.42], [-0.55, -0.42], [-0.55, 0.42]]"  # Jazzy wants a string of [x, y] pairs
+      points: "[[0.79, 0.57], [0.79, -0.57], [-0.67, -0.57], [-0.67, 0.57]]"  # Jazzy wants a string of [x, y] pairs
       action_type: "stop"
       max_points: 3
       visualize: true
       polygon_pub_topic: "polygon_stop"
     SlowdownZone:
       type: "polygon"
-      points: "[[0.95, 0.45], [0.95, -0.45], [-0.75, -0.45], [-0.75, 0.45]]"  # from v31: ahead/behind only, chair parts and walls beside it held speed at 30%
+      points: "[[0.95, 0.60], [0.95, -0.60], [-0.75, -0.60], [-0.75, 0.60]]"  # Mode 3: widened to enclose the CAD castors; keep ahead/behind extents
       action_type: "limit"  # from v31: was slowdown x0.3, which cut in-place turns to 0.105 rad/s, inside the motor deadband
       max_points: 3
       linear_limit: 0.15
@@ -515,7 +520,7 @@ collision_monitor:
     # covers the in-place-turn sweep the narrowed SlowdownZone no longer does.
     FootprintApproach:
       type: "polygon"
-      points: "[[0.50, 0.40], [0.50, -0.40], [-0.50, -0.40], [-0.50, 0.40]]"  # 0.90 x 0.70 chair + 0.05 m
+      points: "[[0.74, 0.55], [0.74, -0.55], [-0.62, -0.55], [-0.62, 0.55]]"  # CAD body and castors + 0.05 m
       action_type: "approach"
       time_before_collision: 1.2
       simulation_time_step: 0.1

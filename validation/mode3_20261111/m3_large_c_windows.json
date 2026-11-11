@@ -1,0 +1,195 @@
+[
+  {
+    "obj": "table",
+    "counted": true,
+    "t0": 1794413755.1295094,
+    "t_end": 1794413773.8678596,
+    "verdict": "Arrived at the table.",
+    "ray_gap": "centre-to-obstacle-ahead=0.94 m (front gap 0.49 m)",
+    "front_gap": 2.414738773484116,
+    "bearing_error": 108.4304541824969,
+    "amcl_error": 0.03870135283978884,
+    "gazebo": [
+      1.6298249829482416,
+      2.6864778370721107,
+      0.6719491980765256
+    ],
+    "amcl": [
+      1.5923112443699448,
+      2.6959917284688544,
+      0.6760655122984534
+    ],
+    "steps": 0,
+    "instance_measurements": [
+      {
+        "instance": "BalconyTable_01_001",
+        "front_gap": 2.414738773484116,
+        "bearing_error": 108.4304541824969,
+        "geometry_pass": false
+      },
+      {
+        "instance": "KitchenTable_01_001",
+        "front_gap": 4.017531124442667,
+        "bearing_error": 57.917354822795076,
+        "geometry_pass": false
+      },
+      {
+        "instance": "CoffeeTable_01_001",
+        "front_gap": 4.356485234802774,
+        "bearing_error": 129.9419679734409,
+        "geometry_pass": false
+      }
+    ],
+    "matched_instance": "BalconyTable_01_001"
+  },
+  {
+    "obj": "chair",
+    "counted": true,
+    "t0": 1794413773.8692565,
+    "t_end": 1794413803.280032,
+    "verdict": "Arrived at the chair.",
+    "ray_gap": "centre-to-obstacle-ahead=0.98 m (front gap 0.53 m)",
+    "front_gap": 0.41024533345402364,
+    "bearing_error": 5.0931217942751,
+    "amcl_error": 0.028935912872405677,
+    "gazebo": [
+      0.9890401616291727,
+      3.1076537428129702,
+      2.248480098128865
+    ],
+    "amcl": [
+      0.9603907176421069,
+      3.111715320461056,
+      2.255904525815481
+    ],
+    "steps": 0,
+    "instance_measurements": [
+      {
+        "instance": "ChairD_01_002",
+        "front_gap": 0.41024533345402364,
+        "bearing_error": 5.0931217942751,
+        "geometry_pass": true
+      },
+      {
+        "instance": "ChairD_01_001",
+        "front_gap": 1.84238272305102,
+        "bearing_error": 28.347367147259337,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_003",
+        "front_gap": 5.36712430998204,
+        "bearing_error": 144.52466421429625,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_002",
+        "front_gap": 6.094732760524261,
+        "bearing_error": 157.5863730281219,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_004",
+        "front_gap": 6.2760839417370144,
+        "bearing_error": 142.27782786020506,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_001",
+        "front_gap": 6.86393812356682,
+        "bearing_error": 154.15908421266917,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairA_01_005",
+        "front_gap": 8.849167693948699,
+        "bearing_error": 58.5006337875847,
+        "geometry_pass": false
+      },
+      {
+        "instance": "ChairD_01_003",
+        "front_gap": 11.678553543582083,
+        "bearing_error": 90.5803286699064,
+        "geometry_pass": false
+      }
+    ],
+    "matched_instance": "ChairD_01_002"
+  },
+  {
+    "obj": "door",
+    "counted": true,
+    "t0": 1794413803.283086,
+    "t_end": 1794413832.3765342,
+    "verdict": "Arrived at the door.",
+    "ray_gap": "centre-to-obstacle-ahead=0.82 m (front gap 0.37 m)",
+    "front_gap": 0.3719288320087877,
+    "bearing_error": 5.477018909899399,
+    "amcl_error": 0.03514811989937132,
+    "gazebo": [
+      -1.6013865793413038,
+      2.1141713686316286,
+      -2.930260847262248
+    ],
+    "amcl": [
+      -1.5662521514619847,
+      2.1151523426646732,
+      -2.9305290130148434
+    ],
+    "steps": 0,
+    "instance_measurements": [
+      {
+        "instance": "FoldingDoor_01_001",
+        "front_gap": 0.3719288320087877,
+        "bearing_error": 5.477018909899399,
+        "geometry_pass": true
+      },
+      {
+        "instance": "FoldingDoor_01_002",
+        "front_gap": 4.8338352144337025,
+        "bearing_error": 68.50943420962345,
+        "geometry_pass": false
+      },
+      {
+        "instance": "FoldingDoor_02_001",
+        "front_gap": 6.661626787832202,
+        "bearing_error": 167.0222072284505,
+        "geometry_pass": false
+      },
+      {
+        "instance": "FoldingDoor_02_002",
+        "front_gap": 9.383331077706478,
+        "bearing_error": 122.7288099410277,
+        "geometry_pass": false
+      },
+      {
+        "instance": "Door_01_001",
+        "front_gap": 10.629446005019728,
+        "bearing_error": 120.99300999857974,
+        "geometry_pass": false
+      }
+    ],
+    "matched_instance": "FoldingDoor_01_001"
+  },
+  {
+    "obj": "refrigerator",
+    "counted": true,
+    "t0": 1794413832.3790574,
+    "t_end": 1794413914.5548048,
+    "verdict": "Arrived at the refrigerator.",
+    "ray_gap": "centre-to-obstacle-ahead=1.54 m (front gap 1.09 m)",
+    "front_gap": 0.49007179010719626,
+    "bearing_error": 34.939516735975836,
+    "amcl_error": 0.023114867495777538,
+    "gazebo": [
+      7.847999249508166,
+      -2.173788737786589,
+      0.3178103290919843
+    ],
+    "amcl": [
+      7.828566531278284,
+      -2.1863053891576776,
+      0.3148114569009432
+    ],
+    "steps": 0
+  }
+]

@@ -2,6 +2,36 @@
 
 This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
 
+## Latest checkpoint — 2026-11-11
+
+The current v30 code is prepared for the user's limited chair/door/box hardware trial. The final chair/door simulation passed 2/2 with the enclosing CAD footprint and live contact coverage; full Mode 3 acceptance and real-chair validation remain open. No hardware launch or movement occurred in this preparation session. Current speed is 0.40 m/s.
+
+Compact scored windows, contact coverage, exact-stamp localization and stop evidence are preserved in [validation/mode3_20261111](validation/mode3_20261111). [MODE3_TRIAL_RESULTS.md](MODE3_TRIAL_RESULTS.md) summarizes the final results and [MODE3_RUN.md](MODE3_RUN.md) gives launch and hardware checks. Larger recordings and benchmark runners remain local in `bench_tmp/` and `~/wheelchair_bench`; they are not included in the commit. Older readiness notes below describe their historical code states.
+
+## Mode 3 real-trial preparation 2026-11-11 (latest; supersedes readiness notes below)
+
+The user now wants a limited first real-chair trial on a chair, door or box. They explicitly said TV failure and the simulation's hanging light should not delay that trial. Small objects, TV, AC, stairs and clothing-specific people are not requirements for this first trial. This is narrower than full Mode 3 acceptance; do not claim the mode is completely validated.
+
+Done in this session:
+
+- Door scoring now checks heading to the same physical panel's nearest surface, so a correctly approached visible end is not failed for facing away from its hidden centre. Distance <=1 m and heading <=45 degrees are retained. Fresh `m3_large_b` scored 4/5 (table, chair, door, fridge) with zero recoveries and sampled map overlaps. Door gap 0.40 m, heading 3.6 degrees. TV was found but no safe close approach was available. Earlier `m3_large_a` remains 3/5.
+- Sim AMCL uses OmniMotionModel for the axle-corrected base motion. Real Mode 3 now explicitly passes `axle_to_base:=0.31984` to ZUPT via the real launch; ZUPT's internal integrator remains axle-based while published pose, twist, covariance and TF shift to base_link. AMCL switches to Omni in both real scan branches only for shifted ZUPT. Direct launch defaults remain zero offset.
+- Offline actual ZUPT publication/reference/covariance checks and existing odometry selfchecks passed. A live ZUPT on isolated domain 64 passed a 160-message synthetic full axle pivot; the actual real parameter gate also passed. No wheel commands or hardware launch occurred.
+- The real script reads back ZUPT and AMCL parameters and checks live front RGB + aligned depth, paired freshness, intrinsics, valid ranges and camera-to-base TF before voice startup. Existing USB/serial, full 120 s scan-rate, lifecycle, RViz pose and ordered shutdown checks remain.
+- Elevated RGB-D objects retain measured depth instead of snapping to the cabinet underneath. Mixed separated surfaces remain rejected. An additional crop-label check now rejects disagreements for horizontally edge-clipped boxes.
+- Native Gazebo contact telemetry now covers all 14 converted collision shapes. `m3_large_c` was stopped incomplete after a false table detection and physical main-body contact with Chandelier_01_003 during the TV search. Its chair, door and fridge routes had no contact. Do not count it as a full-suite pass.
+- The CAD main body extends x=-0.562..0.678 m and nearly 2 m high, larger than the old +/-0.45 m rectangle. The user replied that these are real-chair dimensions. v30 now encloses every CAD collision shape at x=-0.57..0.69, y=+/-0.50, including the asymmetric right castor sphere reaching y=-0.4875, with existing 0.03 padding. StopZone, SlowdownZone and FootprintApproach enclose the same body. VLM turn room is 1.32 m around the axle. `bench_tmp/physical_geometry_check.py` passed against all converted STL/primitive collisions and the actual params. A new sim map `maps/small_house_clearance.yaml` includes collision geometry through 2.1 m (`world_to_map.py --max-height 2.1`) so hanging fixtures are represented. The old map is preserved.
+
+**Ready for the user's limited chair/door real trial.** The final current-footprint run `m3_large_trial_b` passed **2/2**, zero recoveries, zero physical obstacle contacts, and zero sampled map overlaps. Chair: 0.569 m front-probe gap, 16.2 degrees heading; door: 0.943 m, 41.9 degrees toward its physical panel. There were five predicted collision-ahead stops on the chair route, so this does not establish Mode 1 smoothness. Continuous native support/contact telemetry covered all 14 publishers; contact summaries and same-stamp localization summaries are in `bench_tmp/m3_large_trial_b_*`. Moving localization p95 was 0.1335 m / 0.707 degrees. The benchmark exited normally.
+
+Earlier `m3_large_trial_a` also reached chair and door with zero contact, before the final castor-width enlargement. Its scoring completed and saved both windows, then native Gazebo transport crashed at interpreter teardown. `GazeboTruth.close()` now destroys transport before Python shutdown; the final trial_b exited 0. Original score criteria and geometries are retained. These two-target smoke runs do **not** establish a full five-target Mode 3 pass.
+
+Live sim stop check passed: an active search spin was canceled and the wheel command reached zero in 0.19 wall seconds, stayed zero. Result: `bench_tmp/mode3_stop_result.json`. `colcon build --base-paths src` passed for all 10 packages. Launch-substitution, actual ZUPT reference/covariance, original odometry, mixed-depth, contact-classification and CAD envelope checks passed. Python/shell syntax and CRLF-aware diff whitespace passed.
+
+**Stopped:** all simulation, navigation, voice, recorder and isolated domain-64 test processes. The healthy VLM server remains on port 8091. No hardware launch or real movement was performed.
+
+**Real run:** from an interactive terminal in this workspace, `./scripts/mode3_real.sh` (laptop mic + text subscriber), or `./scripts/mode3_real.sh --text`. The script supplies the corrected reference, checks USB/serial, measures scans for 120 s, checks live RGB-D and ZUPT/AMCL settings, and waits for the operator's RViz pose alignment/Enter before voice starts. Power the Arduino first, put the front D455 directly on USB 3, start with a clearly visible chair or door on open floor and keep the power cut within reach. Say “take me to the chair”, “go to the door” or “stop”. Ctrl+C stops voice before navigation. The speed remains 0.40 m/s. A box phrase is supported but not sim-validated. Full Mode 3 and real microphone/camera/route validation remain unfinished. See MODE3_RUN.md and fixes.md.
+
 ## Mode 3 sim session 2026-11-11 (read this first; it supersedes the older Mode 3 sections below)
 
 ### Later the same day

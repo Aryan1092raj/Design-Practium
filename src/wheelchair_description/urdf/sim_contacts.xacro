@@ -1,0 +1,146 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+  <!-- Sim-only physics contact telemetry for every converted collision. -->
+  <xacro:if value="$(arg is_sim)">
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_0" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__wheelchair_main_collision</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_0</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_1" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__camera_collision_1</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_1</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_2" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__IMU_collision_2</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_2</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_3" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__left_castor_collision_3</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_3</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_4" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__l_castor_wheel_collision_4</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_4</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_5" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__lidar_collision_5</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_5</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_6" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__mapping_camera_link_collision_6</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_6</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_7" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__right_camera_link_collision_7</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_7</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_8" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__right_castor_collision_8</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_8</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="base_link">
+      <sensor name="contacts_base_link_9" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>base_link_fixed_joint_lump__r_castor_wheel_collision_9</collision>
+          <topic>/wheelchair/contacts/contacts_base_link_9</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="left_wheel">
+      <sensor name="contacts_left_wheel_0" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>left_wheel_collision</collision>
+          <topic>/wheelchair/contacts/contacts_left_wheel_0</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="left_wheel">
+      <sensor name="contacts_left_wheel_1" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>left_wheel_fixed_joint_lump__left_encoder_collision_1</collision>
+          <topic>/wheelchair/contacts/contacts_left_wheel_1</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="right_wheel">
+      <sensor name="contacts_right_wheel_0" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>right_wheel_collision</collision>
+          <topic>/wheelchair/contacts/contacts_right_wheel_0</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+    <gazebo reference="right_wheel">
+      <sensor name="contacts_right_wheel_1" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <collision>right_wheel_fixed_joint_lump__right_encoder_collision_1</collision>
+          <topic>/wheelchair/contacts/contacts_right_wheel_1</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+</robot>

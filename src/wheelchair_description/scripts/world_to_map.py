@@ -8,6 +8,7 @@ origin has map pose (0, 0).
 Usage: world_to_map.py WORLD.world MODELS_DIR OUT_PREFIX
 Writes OUT_PREFIX.pgm and OUT_PREFIX.yaml.
 """
+import argparse
 import math
 import sys
 import xml.etree.ElementTree as ET
@@ -147,7 +148,16 @@ def transform(tris, m):
 
 
 def main():
-    world_path, models_dir, out = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('world', type=Path)
+    parser.add_argument('models', type=Path)
+    parser.add_argument('output')
+    parser.add_argument('--max-height', type=float, default=1.0,
+                        help='Whole-body collision clearance height in metres (default: 1.0).')
+    args = parser.parse_args()
+    if not math.isfinite(args.max_height) or args.max_height <= 0.05:
+        parser.error('--max-height must be finite and greater than 0.05 m')
+    world_path, models_dir, out = args.world, args.models, args.output
     world = ET.parse(world_path).getroot().find("world")
 
     def gather(kind, zmin, zmax):
@@ -174,7 +184,7 @@ def main():
     # Safety layer: whole-body collision shapes. Lidar layer: what the simulated lidar
     # actually sees - gpu_lidar renders visuals at the sensor height (~0.04 m above floor),
     # so AMCL needs those cells occupied to match the scans. Map = union of both.
-    tris = np.concatenate([gather("collision", 0.05, 1.0), gather("visual", LIDAR_Z - 0.01, LIDAR_Z + 0.01)])
+    tris = np.concatenate([gather("collision", 0.05, args.max_height), gather("visual", LIDAR_Z - 0.01, LIDAR_Z + 0.01)])
 
     xy = tris[..., :2]
     x0, y0 = xy[..., 0].min() - 1.0, xy[..., 1].min() - 1.0

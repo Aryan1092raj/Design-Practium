@@ -63,8 +63,8 @@ CLASSES = ["bed", "sofa", "chair", "table", "desk", "wardrobe", "cabinet", "shel
 # side-on as a plain wooden slab, was labelled "cabinet" 5 times and never reached.
 KIN = {"wardrobe": {"cabinet"}, "cabinet": {"wardrobe"}, "table": {"desk"}, "desk": {"table"}}
 CAMERAS = ["camera"]  # front D455 only; the side cameras run depth-only to save USB bandwidth
-# Chair centre to the object's near face, nearest first. The chair's front is 0.45 m ahead of its
-# centre, so with Nav2's 0.15 m goal tolerance the front stops within 1 m of the object. 0.7-0.85
+# Base_link to the object's near face, nearest first. The CAD body reaches 0.69 m
+# ahead; the bench retains its stricter 0.45 m front probe and 1 m distance limit. 0.7-0.85
 # alone left no free spot in front of the sim sofa (coffee table, 0.65 m inflation).
 STANDOFF = (0.8, 1.0, 1.2, 1.3)
 # Looks per scan, turning 360/LOOKS degrees between them. Six, so views overlap: with four, an
@@ -81,10 +81,10 @@ MIN_SIGHT = 2.5
 FREE_COST = 50  # global costmap cells below this count as free for a goal
 # The chair turns in place about its drive axle, 0.32 m behind base_link (urdf wheel joints;
 # Gazebo poses after four spins all sat within 6 cm of one axle point). Goals keep lethal cells
-# TURN_CLEAR from the axle: the padded front corner (0.80, 0.38) from it sweeps 0.89 m, plus
+# TURN_CLEAR from the axle: the padded CAD front corner (1.04, 0.53) sweeps 1.167 m, plus
 # Nav2's 0.15 m goal tolerance.
 AXLE_BACK = 0.32
-TURN_CLEAR = 1.04
+TURN_CLEAR = 1.32  # CAD: padded front reaches 1.04 m from axle; corner 1.167 m + 0.15 m goal tolerance
 STOP = re.compile(r"\b(stop|halt|cancel)\b")
 GO = re.compile(r"\b(?:go|take me|bring me|drive|move|head|navigate)\b.*?\b(?:to|towards?|near)\s+"
                 r"(?:the |a |an |my )?(?P<t>[a-z ]+)")
@@ -833,11 +833,22 @@ class VoiceNav(Node):
             height = (np.stack([(uu[ok] - k[2]) / k[0] * zs, (vv[ok] - k[5]) / k[4] * zs, zs], 1)
                       @ r.T + t)[:, 2]
             above = zs[height > height.min() + 0.10]
+            # Separate depth bands can be the target behind a nearer partition. A box label
+            # does not identify which band belongs to it; keep searching instead of arriving
+            # at the foreground or accepting an unverified half of the same box.
+            ordered = np.sort(above if above.size else zs)
+            lo, hi = int(len(ordered) * 0.1), int(len(ordered) * 0.9)
+            if np.any(np.diff(ordered[lo:hi + 1]) > 0.5):
+                self.get_logger().info(f"{target}: separated depth surfaces in box; looking again.")
+                return None
             z = float(np.percentile(above if above.size else zs, 25))
             u, v = (bx1 + bx2) / 2, (y1 + y2) / 2
             point = np.array([(u - k[2]) / k[0] * z, (v - k[5]) / k[4] * z, z])  # optical frame
             raw = (r @ point + t)[:2]
-            obj = self.near_face(chair, raw)
+            # A ground-plane costmap can hold the cabinet below an elevated target.
+            # Its first lethal cell is then unrelated to the surface measured by
+            # RGB-D (e.g. a TV screen). Only low surfaces use the map-face correction.
+            obj = raw if np.percentile(height, 10) > 0.5 else self.near_face(chair, raw)
             self.get_logger().info(f"{target}: map ({obj[0]:.2f}, {obj[1]:.2f}) (depth ({raw[0]:.2f}, "
                                    f"{raw[1]:.2f})), chair at ({chair[0]:.2f}, {chair[1]:.2f})")
             d = obj - chair
@@ -923,6 +934,22 @@ class VoiceNav(Node):
             label = json.loads(text).get("label")
         except (ValueError, AttributeError):
             label = None
+        if label == expected and (x1 == 0 or x2 == VLM_W):
+            # The full-frame context can mislabel a cut-off rack as a table.
+            # Keep that check and independently classify the visible crop;
+            # disagreement is a reason to look again, never a navigation goal.
+            edge_text = self.ask(img[y1:y2, x1:x2],
+                                 "What object is visible in this crop? Pick the closest label; "
+                                 "use other if the object cannot be identified.",
+                                 {"type": "object", "properties": {"label": {"enum": labels}},
+                                  "required": ["label"]})
+            try:
+                edge_label = json.loads(edge_text).get("label")
+            except (ValueError, AttributeError):
+                edge_label = None
+            self.get_logger().info(f"VLM edge verify for '{target}': {edge_label}")
+            if edge_label != expected:
+                return None
         self.get_logger().info(f"VLM box {[x1, y1, x2, y2]} for '{target}', verify: {label}")
         dump = os.environ.get("VLM_NAV_DUMP")  # bench: keep each verified frame for offline replay
         if dump:

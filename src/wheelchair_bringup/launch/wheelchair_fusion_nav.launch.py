@@ -90,6 +90,11 @@ def generate_launch_description():
         description='Record diagnostic rosbag (~42 KB/s, no scans). Disable with record_bag:=false'
     )
 
+    declare_axle_to_base = DeclareLaunchArgument(
+        'axle_to_base', default_value='0.0',
+        description='ZUPT output axle-to-base_link offset; Mode 3 supplies 0.31984 m.'
+    )
+
     # Launch configurations
     map_name = LaunchConfiguration('map_name')
     nav2_params = LaunchConfiguration('nav2_params')
@@ -114,6 +119,7 @@ def generate_launch_description():
             'map_name': map_name,
             'use_sim_time': use_sim_time,
             'rviz': 'false',
+            'axle_to_base': LaunchConfiguration('axle_to_base'),
             # The wheels obey the collision monitor's output when it is on.
             'cmd_vel_in': PythonExpression([
                 "'", use_collision_monitor, "' == 'true' and '/cmd_vel_safe' or '/cmd_vel'"]),
@@ -421,6 +427,7 @@ def generate_launch_description():
         declare_use_collision_monitor,
         declare_use_imu_diagnostic,
         declare_record_bag,
+        declare_axle_to_base,
 
         localization_launch,
         # NOTE: odom_velocity_corrector comes from localization_launch

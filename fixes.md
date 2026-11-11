@@ -2,6 +2,14 @@
 
 This file lists the problems that stopped or degraded real-chair runs and how each one was fixed. Newest first. Each entry gives the symptom, the cause, the fix and how it was checked.
 
+## 2026-11-11: Mode 3 base-frame reference and collision envelope (hardware validation pending)
+
+**Problem.** The real wheel controller reports axle motion as `base_link`, although the URDF puts `base_link` 0.31984 m ahead of the driven-wheel axle. Recorded real turns moved the localized base about 0.23–0.36 m while wheel odometry barely translated. In simulation, correcting that translation exposed a second mismatch: DifferentialMotionModel injected excessive noise for sideways base swing. CAD contact telemetry also showed that the old +/-0.45 m footprint omitted the forward body and castors.
+
+**Prepared fix.** `scripts/mode3_real.sh` passes `axle_to_base:=0.31984`. ZUPT still integrates axle motion and shifts its published pose, lateral twist, covariance and TF to the base frame. The launch selects AMCL OmniMotionModel for that shifted output, preserving the existing wheel-heading fusion and speed limits. Startup reads back those parameters and checks actual front RGB/aligned depth before starting voice. v30's footprint conservatively encloses all CAD collision shapes at x=-0.57..0.69 m, y=+/-0.50 m, with 0.03 m padding; stop/slowdown/approach zones enclose the same body. Mode 3 turn clearance is 1.32 m about the axle.
+
+**Evidence.** Actual publication/covariance and original odometry regression checks passed offline. A live ZUPT on isolated ROS domain 64 passed 160 synthetic turn samples, including the offset pose and lateral velocity, and the real parameter gate passed there. No wheel commands were sent in that check. All 14 converted CAD collision shapes fit the final footprint and padded turn disc. The simulation chair/door smoke run and stop check are recorded in HANDOFF.md. Real lab routes, microphone and hardware remain to be checked in the user's first limited chair/door/box trial.
+
 ## 2026-11-09: left wheel encoder overcounts about 1.54× (FIXED 2026-11-10 by calibration; a rigid mount is still pending)
 
 **Symptom.** On a 4 m straight goal the chair curves left until it stops at a wall, and it moves again only after it is pushed away. The tape reads about 3 m while odometry reads about 4 m. After every drive the lidar scan sits rotated off the map walls, and 2D Pose Estimate has to be set again. Earlier drives showed the same fault as a "37% / 32% odometry overcount" and as a left-right zigzag.
