@@ -1,6 +1,64 @@
 # Handoff — 2026-11-10 (after the fourth real-chair session)
 
-This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it. The user is switching to Fable 5.2 for the next session.
+This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
+
+## Mode 3 sim session 2026-11-11 (read this first; it supersedes the older Mode 3 sections below)
+
+### Later the same day
+
+Florence-2 large was tested as a detector on 142 cases: zero misses, but a box on all 111 absent cases with both `OPEN_VOCABULARY_DETECTION` and `CAPTION_TO_PHRASE_GROUNDING`, at 0.22 s and 1.8 GB VRAM. Qwen3-VL stays: one miss and zero false boxes.
+
+The localization root cause was missed updates after stopping: the map fits the lidar 97–99% at the true pose, but AMCL only updates while moving and was left 0.19–0.73 m and up to 15.5° off after spins. `amcl_settle.py` now requests 15 no-motion updates at 5 Hz once the chair stops, launched in sim and the real launch; the spin check gave 0.03–0.24 m and under 2°. AMCL params are unchanged; variants A/B/C changing update_min, alphas and sigma_hit did not help or jumped 3.34 m.
+
+In sim, `odom_axle_to_base.py` takes the sideways swing from the IMU turn rate and the EKF fuses `vy`; odom error fell to 0.05–0.15 m. This is sim only: the real launch still reports axle motion as `base_link`.
+
+A codex review found 14 defects; 10 are fixed. Shutdown and worker exceptions cancel the outstanding navigation or spin goal with a bounded 2 s wait while the executor runs. Goal submission checks stop before sending and after acceptance, cancels late acceptance, and bounds the response wait to 5 s. The v30 planner now excludes unknown floor, matching coverage BFS. Small lethal blobs only stop blocking turn clearance when fresh scan evidence identifies them as stale noise, while poles remain obstacles. The final face spin checks clearance at the actual arrival pose and yaw and is skipped when blocked. The last attempt stops instead of driving to a standoff from a sighting beyond `MAX_RANGE`. RGB and depth pairs more than 0.10 s apart are rejected within the existing freshness timeout. Re-looks keep at least 60 s but the whole command, including intermediate drives, is capped at `SEARCH_TIME + 120 s`. The nearer close-in fallback chooses the farthest eligible spot toward `MIN_SIGHT` to keep low objects in frame. When no exploration spot shows 4 m² unseen, the best spot showing at least 1 m² is accepted. Four defects remain: a partition in the last metre, blind-zone floor counted as seen, colour words, and low-object floor removal.
+
+With those fixes, `m3_ae` scored 2/5: the first speck rule removed turn-safe spots (241 to 172 on a saved costmap), and a false fridge sighting ended the command. Both changed: the speck rule now uses scan evidence and unusable sightings keep searching. The wardrobe ended 1.81 m off AMCL in `m3_ae`; its cause remains open.
+
+`m3_af` with these changes was still running at commit time, so THIS COMMIT STATE HAS NOT PASSED IN SIM. Do not run it on the real chair before a 4/5 sim run.
+
+v30 equals v31 except `FollowPathReverse`, `always_send_full_costmap: true`, `allow_unknown: false`, and `min_velocity` x −0.10. Offline checks live in `~/wheelchair_bench` and `bench_tmp/` (untracked).
+
+Mode 3 reached 4 of 5 objects in Gazebo `small_house` in three runs in a row (`m3_aa`, `m3_ab`, `m3_ac`), with no collisions and no recoveries. The fourth, `m3_ad`, scored 3/5 on the bench: the bed failed, and the sofa was reached (0.50 m, 0.7°) but the bench fails any recovery and there was one local-costmap clear as the chair left its parking spot at the wardrobe. AGENTS.md fails only a recovery loop, so by that rule `m3_ad` is 4/5. These earlier results predate the later changes and failures recorded above; the changes are committed on `voice-vlm-nav`.
+
+The user wants Mode 3 to work in any indoor environment, so no fix below uses place names or small_house geometry.
+
+### What changed in `vlm_nav.py`
+
+- **Exploration by map coverage** replaced the straight-ray `explore_goal()`. `coverage()` builds turn-safe spots from the live global costmap: cost-0 cells on a 0.25 m lattice, reachable by BFS over cost 0–98, with `TURN_CLEAR + AXLE_BACK` (1.36 m) to solid structure. `mark_seen()` ray-casts 5 m from each finished scan. `coverage_goal()` picks the spot with the most unseen open floor per metre of path, times 1.5 when it lies in the view `choose()` picked. Nav2 routes there, so doorways need nothing special.
+- **Lidar specks:** the obstacle layer leaves thousands of one-cell marks beside walls (4603 of 4777 lethal blobs in `m3_x`). Only blobs at most 16 cm² with fresh scan evidence of free space can be ignored for turn room; a spot is still a cost-0 cell, so inflation keeps it clear of each mark. The sim global costmap is 0.02 m per cell, not 0.05.
+- **Search limit** is 600 s on the node clock (`now()`), not 180 s of wall time: Gazebo ran at about 0.6× real time, and a scan plus the drive to it takes about 50 s. `go == 0` from the VLM only drops the direction preference. Spots showing 4 m² of unseen floor are preferred; when none does, the best spot showing at least 1 m² is accepted.
+- **Scan** is 6 looks at 60° (`LOOKS`), so an object cut by one frame edge is whole in the next view. A blocked spin no longer ends the search: the chair drives to the nearest turn-safe spot and scans there (`coverage_goal(nearest=True)`), twice at most.
+- **Far sightings** go to `close_in()`: the nearest turn-safe spot at least `MIN_SIGHT` from the estimate with a lethal-free line to it. When no such spot exists it takes the farthest eligible spot from 1.5 m to `MIN_SIGHT` (`min_range`). Re-looks keep the rest of the search time or at least 60 s, within the whole-command cap of `SEARCH_TIME + 120 s`.
+- **Standoff** tries every bearing, the chair's side first, and needs the spot reachable and in plain view of the object. When none fits, `close_in(side=True)` moves the chair at least 60° round the object for another look. `ground()` falls back to the left and right half of a wide box (the L-shaped sofa's centre sits in a nook).
+- **Verify:** the rider's phrase is mapped once to a list label ("couch" → sofa). `KIN` lets wardrobe/cabinet and table/desk stand for each other, but only on a box at least a third of the frame; a 29 px "cabinet" sent the chair 6 m the wrong way in `m3_ab`.
+- **Whisper:** no `initial_prompt` (it made Whisper invent "stop" from mic noise; `hotwords` uses the same prompt path in faster-whisper 1.2.1). Segments need `no_speech_prob <= 0.5` and `avg_logprob >= -0.95`. `voice_nav.py` still has the old prompt; carry the fix on `voice-slm-nav`.
+- **`vlm_server.sh`:** `--cache-ram 0 --parallel 1`. The 8 GB host prompt cache grew the server until earlyoom killed it mid-run twice.
+
+The later review state, with 10 fixes and four remaining defects, is recorded above.
+
+### Bench (`~/wheelchair_bench`)
+
+`cover_check.py` (coverage, close-in, standoff on the sim map), `explore_check.py`, `wedge_check.py`, `verify_check.py` (needs the VLM server) and `whisper_check.py` (run with `.venv-voice`; exits 1 on four eSpeak recognition misses, noise clips all pass). `m3.sh` sets `VLM_NAV_DUMP=~/wheelchair_bench/dump`, where `vlm_nav.py` saves each verified frame and the costmap whenever no spot is left, a sighting has no usable viewpoint, or it reports "can't get closer" or "can't find a free spot"; `m3_x`'s bed failure was reproduced offline from `costmap_145.npy`. Do not launch `m3.sh` from a shell command that contains the text `vlm_nav.py`: its `pgrep -f` guard matches the launching shell.
+
+### Runs
+
+| Run | Score | Failed | Cause |
+|-----|-------|--------|-------|
+| `m3_x` | 3/5 | bed, wardrobe | lidar specks left no spot facing the bedroom |
+| `m3_y` | 4/5 | bed | VLM said `go: 0`, old rule ended the search |
+| `m3_z` | 3/5 | wardrobe, sofa | wardrobe labelled "cabinet"; no standoff from the east |
+| `m3_aa` | 4/5 | wardrobe | labelled "cabinet" again, side-on |
+| `m3_ab` | 4/5 | wardrobe | far kitchen cabinet accepted as kin, re-look limit ended search |
+| `m3_ac` | 4/5 | sofa | spin blocked where the chair parked at the wardrobe |
+| `m3_ad` | 3/5 (bench) | bed, sofa | bed seen at 4.1 m, no close-in spot `MIN_SIGHT` away in the bedroom; sofa reached with one recovery |
+
+### Still open
+
+- **Localization is still a limit.** No-motion updates improved the spin check and sim axle/`base_link` odometry is corrected, but the wardrobe ended 1.81 m off AMCL in `m3_ae`; its cause is open. The real launch still reports axle motion as `base_link`.
+- Not checked on the real chair: red-box verify on the real camera, Whisper thresholds on a human voice, the speck rule at the lab map's resolution.
+- Florence-2 was tested and rejected as a detector because it boxed every absent case; Qwen3-VL stays. SAM mask depth and image tiling remain dropped as not needed by any run.
 
 ## Current goal
 The user wants to test Mode 3 (voice + VLM, zero-shot) next. Repeated real-chair faults have blocked every test so far. The left wheel encoder overcounted by a factor that kept changing (1.54, then 1.28, then 1.34). It is now calibrated with `CPR_L = 13100`, and on 2026-11-10 the chair drove 5 m straight on the ground. Mode 2 on the real chair is unblocked. A rigid mount would stop the factor from drifting again.
@@ -50,7 +108,7 @@ Two more dp lab goals came while the chair was already there, so they didn't tes
 - Launch logs go to `logs/real_nav_HHMMSS.log` (tee in the launch command below). Today's logs are `real_nav_224256.log` (ground runs) and `real_nav_231329.log` (lifted runs).
 
 ## Next session, in order
-1. Mode 3 in sim, which doesn't need the chair: on `voice-vlm-nav` (0.40 m/s already carried into v30), run the VLM zero-shot path in Gazebo `small_house` (`scripts/vlm_server.sh`, `vlm_nav.py`). Pass: 4 of 5 objects reached.
+1. Mode 3 in sim, which doesn't need the chair: on `voice-vlm-nav` (0.40 m/s already carried into v30), run the VLM zero-shot path in Gazebo `small_house` (`src/wheelchair_description/scripts/vlm_server.sh`, `vlm_nav.py`). Pass: 4 of 5 objects reached; this commit state has not passed yet.
 2. The encoder is now calibrated and drives straight. Repeat the 5 m ground run once (`scripts/open_straight.py 5.0 0.4`), and re-measure the factor if the user ever remounts the encoder. Then finish the Mode 2 real-chair pass: 5 goals between `dp_lab` and `optical_lab` (13.92, 3.65), 4 of 5 required. 2 arrived on 2026-11-10 (see Voice run above). Fix the weak-match bug first ("pickle lab" → `dp_lab`).
 3. Leftover items: RPP `detected collision ahead!` near walls, `SlowdownZone` toggling, "Transform data too old", the IMU fault, refusing weak voice matches ("doctor" → `dp_lab`), and stale AGENTS.md lines (the speed note says 0.25 m/s, and it says AMCL uses the fused scan).
 
@@ -111,7 +169,7 @@ Kept as written then, apart from two dropped notes. The left veer was the left e
   0/5 with no collision-ahead stops or recoveries (the bench does not measure contact): the 1.11 m effective `clear()` rejected every standoff and
   close-in step (sofa "no free spot", far fridge and wardrobe "can't get closer"), bed and dumbbell
   not found. `clear()` is now axle-centred and lethal-only (below). `m3_o` was voided by earlyoom.
-  `m3_p` (current code) scored 1/5, no recoveries. Contact is not measured: at the fridge stop the
+  `m3_p` (older code) scored 1/5, no recoveries. Contact is not measured: at the fridge stop the
   rack corner sat at (0.29, 0.35) in the chair's body frame, on the 0.35 m footprint edge, so likely
   touching (collision_ahead=1 there). Cheap add: footprint at the Gazebo pose vs the map's distance
   transform after each request (mid-drive contact would need polling). Sofa PASS (front gap 0.44 m, 5.9°).
@@ -120,16 +178,16 @@ Kept as written then, apart from two dropped notes. The left veer was the left e
   drive ended with AMCL 0.96 m off Gazebo (14° yaw), so the chair stood 0.46 m from the rack
   corner while it believed it was in the open. The next spins hit "Exiting Spin", and `turn()`
   then ended the fridge and dumbbell searches at once ("not found" in 15 s and 11 s). A pass
-  needs two runs at 4/5.
+  needs a 4/5 sim run on this commit state before a real-chair run.
 
-### Mode 3 changes (uncommitted on `voice-vlm-nav`)
+### Earlier Mode 3 changes (now committed on `voice-vlm-nav`)
 
 `src/wheelchair_description/scripts/vlm_nav.py` and `src/wheelchair_navigation/config/nav2_params_3cam_v30.yaml`:
 
 - A close-in drive toward a far sighting stops `MIN_SIGHT` (2.5 m) short. The camera (1.34 m up, 64°
   vertical FOV) sees the floor only beyond ~2.2 m, so driving closer lost the dumbbell in `m3_e`.
-- Exploration skips goals within 1.0 m of spots already scanned for the command (`m3_e` drove back to
-  its own scan spot), uses integer 5 cm samples, and needs cost 0 at the goal.
+- Exploration now tracks seen floor and chooses reachable turn-safe spots on a 0.25 m lattice,
+  with cost 0 at the goal; this replaces the older distance-from-scanned-spots rule.
 - `near_face()` snaps the depth estimate to the first lethal global-costmap cell on the chair-to-object
   line, within ±1 m, for sightings <= 4 m. Depth put the sim bed and sofa estimates inside the object
   and the wardrobe 0.7 m short of it.
@@ -140,7 +198,7 @@ Kept as written then, apart from two dropped notes. The left veer was the left e
   0.63 m from the dumbbell rack, let the corners clip the rack during the 4-view scan and wedged
   the chair; exploration goals had no turn check then. The old check (lethal or inscribed within
   0.76 m of `base_link`) needed ~1.11 m and still modelled the turn about the wrong point.
-  Assumes the chair arrives facing the goal yaw (shortcut comment in `clear()`). Untested whether
+  The final spin now checks the actual arrival pose and yaw. Untested whether
   front gaps stay within 1 m. Self-checks: `~/wheelchair_bench/explore_check.py` and
   `wedge_check.py` (replays the `m3_m` goal on the sim map: rejected; the new pick's axle is 1.04 m
   from the rack).
@@ -151,9 +209,8 @@ Kept as written then, apart from two dropped notes. The left veer was the left e
 - Tried and reverted: a full-resolution, min-size, black-padded verify crop. On the 16 saved views it
   added two false boxes at the frame edge and lost one real dumbbell.
 - Self-check: `explore_check.py` (explore_goal, near_face and clear on a fake costmap) passes.
-- Codex reviewed the diff twice; all findings fixed except: the `or goal` Nav2 fallback for far
-  sightings still ignores `MIN_SIGHT` (shortcut comment in `run()`), and a revisited far endpoint
-  rejects a direction even when a shorter unvisited stop exists.
+- The unsafe `or goal` fallback for far sightings is removed; the later review fixes are recorded
+  at the top of this section.
 
 ### Test bench (now in `~/wheelchair_bench`, outside the repo, uncommitted)
 
@@ -169,8 +226,8 @@ The bench moved out of the old scratchpad: `m3.sh`, `m3_run.py`, `sim.sh`, `run.
 3. **Scoring from Gazebo (done).** `m3_run.py` scores gap and bearing from `gz model -m wheelchair
    -p` (map frame = world frame, model root = `base_link`, AMCL agrees within 0.04 m at spawn). It
    logs amcl-vs-gazebo after warm-up and every request, and fails a goal only above 1.0 m (gross
-   loss, like the 11 m `m3_m` wedge). 0.3 m failed every goal: sim AMCL is routinely 0.2–0.7 m off
-   after spins (next section). `m3_score_check.py` covers it. Old windows files can't PASS.
+   loss, like the 11 m `m3_m` wedge). Before no-motion updates, 0.3 m failed every goal because
+   sim AMCL was routinely 0.2–0.7 m off after spins. `m3_score_check.py` covers it. Old windows files can't PASS.
 4. **Wrong premise, no fix needed:** `maps/small_house_world.pgm` is built from world collision
    meshes by `world_to_map.py`, not lidar. The dumbbell rack (0.40 m tall) and FitnessEquipment are
    both in the map and both cross the 0.29 m lidar plane. The wedge came from the goal choice (above).
@@ -187,29 +244,27 @@ The bench moved out of the old scratchpad: `m3.sh`, `m3_run.py`, `sim.sh`, `run.
 moved 0.32 m back along its yaw, lands within 6 cm of one point, so the chair turns about the drive
 axle (wheel joints at x −0.32 in the URDF). Nav2's spin and rotate-to-heading checks and the
 footprint assume `base_link`. The front corners actually sweep 0.89 m on a turn, against the 0.61 m
-Nav2 models. AMCL ended 0.17–0.66 m off Gazebo after the spins even though `odom_axle_to_base.py`
-shifts the wheel odometry: the sim EKF fuses only `vx`, so the swing is dropped. Fusing `vy` as well
-was tried and reverted: position error stayed (up to 0.70 m) and yaw went 16–19° off. Mode 1 and 2
-sim passes ran with this gap. The real chair uses the same URDF; if it also turns about the axle,
-every rotate-in-place under-models the front swing by up to ~0.3 m. The AMCL jump right after an
-in-place turn (below) may share the cause, but that is untested. Root fixes are frame-level (put
-`base_link` on the axle and shift the footprint, or fix the odometry in sim and on the chair) and
-touch every mode. `vlm_nav.py`'s axle-centred `clear()` only covers Mode 3's own goals.
+Nav2 models. Earlier AMCL ended 0.17–0.66 m off Gazebo after spins, when the sim EKF fused only
+`vx` and dropped the swing. The current sim correction takes the sideways swing from the IMU
+turn rate and fuses `vy`; no-motion updates fix the missed AMCL updates after stopping, with the
+spin-check results recorded above. Mode 1 and 2 sim passes ran with the earlier gap.
+The real chair uses the same URDF; if it also turns about the axle,
+every rotate-in-place under-models the front swing by up to ~0.3 m. The sim odometry correction
+is implemented; the real launch still has no axle shift. `vlm_nav.py`'s axle-centred `clear()`
+only covers Mode 3's own goals.
 Bag check done (`maps/session_20261107_000512`): in all 4 in-place turns AMCL moved `base_link`
 0.23–0.36 m, so the real chair very likely turns about the axle too. Real odometry has no axle
 shift: `diff_drive_controller` publishes the axle motion as `base_link` (`wc_control.yaml`), and
 `odom_axle_to_base.py` runs only in `gazebo_sim.launch.py`. In turns 3–4 odom moved 0.02–0.03 m
 while AMCL moved 0.23–0.25 m. Fix when the user wants it: launch `odom_axle_to_base.py` in the real
 launch and point `ekf.yaml` `odom0` at `/wc_control/odom_base`, sim-check first. The user chose to
-run v31 as-is first and watch AMCL after every in-place turn. Untested lead for the 14° AMCL yaw error at the `m3_p` fridge stop (yaw comes from the IMU,
-so the axle doesn't explain it): AMCL alphas are 0.05, which may keep the cloud too tight to
-recover from systematically wrong rotation odometry.
-The new `vlm_nav.py` changes (explore goals need `clear()`; `clear()` axle-centred, lethal-only,
-`TURN_CLEAR` 1.04, `round()` radius) have not had a Codex review yet.
+run v31 as-is first and watch AMCL after every in-place turn. AMCL parameter variants did not
+help the sim spin error or jumped 3.34 m; params remain unchanged. The later review of
+`vlm_nav.py` and the fixes are recorded at the top of this section.
 
 ### Mode 3 open problem after the bench is fixed
 
-The 4-view direction pick (`choose()`) sends the chair the wrong way: in `m3_e` and `m3_h`, with every
+The older 4-view direction pick (`choose()`) sent the chair the wrong way: in `m3_e` and `m3_h`, with every
 scan completing its turns, the VLM chose east for the bed (west) 4–5 times. Options for the user:
 a better prompt (e.g. name each photo's room first), passing the search history into the prompt
 (codex suggestion), or fine-tuning the VLM. Don't tune the prompt to one run.
@@ -221,8 +276,9 @@ a better prompt (e.g. name each photo's room first), passing the search history 
   pose jumped 4.16 m along x with 0.03 m of odometry motion. AMCL settled at x ≈ 11–12 and the rider
   re-localized by hand at 375 s to (8.2, 1.9), so it went to a wrong pose, not a correction. Looks like
   corridor aliasing along x. Random recovery is off. Hypothesis, not tested: v29's
-  `update_min_d/a: 0.01` with `resample_interval: 1` resamples every 0.2 s even when stationary and
-  keeps the cloud overconfident (cov yy 0.001). No params changed.
+  `update_min_d/a: 0.01` with `resample_interval: 1` kept the cloud overconfident (cov yy 0.001).
+  AMCL actually gates normal updates on motion; no-motion updates are now requested after stopping.
+  No params changed.
 
 ### Notes
 

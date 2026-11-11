@@ -483,55 +483,78 @@ class VoiceNav(Node):
 
     # ---- semantic search ----------------------------------------------------------------
     def find(self, target, deadline):
-        """Scan 360 degrees; if the target is not seen, let the VLM pick the view most likely to
-        lead to it, drive a few metres that way and scan again, until the deadline."""
-        scanned = []  # (x, y) of each full scan, so exploration doesn't drive back to one
-        while time.time() < deadline and not self.cancelled.is_set():
+        """Scan 360 degrees, then cover unseen reachable floor with a VLM direction preference."""
+        blocked = 0  # scans cut short because the chair had no room to turn
+        while self.now() < deadline and not self.cancelled.is_set():
             views = []  # (rgb, map yaw) of each look, for the direction question
             for turn in range(LOOKS):
                 for cam in CAMERAS:
                     hit = self.ground(cam, target)
-                    if hit:
+                    if hit and self.usable_hit(target, hit):
                         self.get_logger().info(f"{target} seen by {cam} at {hit[1]:.1f} m")
                         return hit
                 view = self.view()
                 if view:
                     views.append(view)
                 if turn < LOOKS - 1:
-                    if self.cancelled.is_set() or time.time() > deadline:
+                    if self.cancelled.is_set() or self.now() > deadline:
                         return None
                     self.say(f"Turning to look for the {target}.")
-                    if not self.turn(math.pi / 2):
-                        return None  # Nav2 gone or spin rejected: rescanning the same view is pointless
-            if len(views) < LOOKS or time.time() > deadline or self.cancelled.is_set():
-                return None  # the VLM's photo numbers only mean a direction for a full scan
+                    if not self.turn(2 * math.pi / LOOKS):
+                        blocked += 1
+                        break
+            if self.now() > deadline or self.cancelled.is_set():
+                return None
+            if len(views) < LOOKS:
+                # No room to turn here (m3_ac: parked at the wardrobe, the next command's first
+                # spin hit "Collision Ahead" and the search ended in 10 s). Scan from the nearest
+                # turn-safe spot instead; twice at most, in case Nav2 itself is gone.
+                goal = self.coverage_goal(None, deadline, nearest=True) if 0 < blocked <= 2 else None
+                if goal is None or not self.go_to(goal, deadline):
+                    return None
+                continue
+            self.mark_seen()
             seen, go = self.choose(views, target)
-            if seen:  # the 4-view call saw it although the per-view boxes missed it: look again
+            if seen:  # the all-views call saw it although the per-view boxes missed it: look again
                 self.turn_to(views[seen - 1][1])
                 hit = self.ground(CAMERAS[0], target)
-                if hit:
+                if hit and self.usable_hit(target, hit):
                     return hit
-            if not go:
-                self.get_logger().info(f"VLM sees no promising direction for '{target}'")
-                return None
-            pose = self.pose()
-            if pose:
-                scanned.append(pose[:2])
-            # the chosen direction first; if it is blocked within a metre or leads back to a
-            # spot already scanned, the other views
-            goal = next((g for g in (self.explore_goal(v[1], avoid=scanned) for v in
-                                     [views[go - 1]] + views[:go - 1] + views[go:]) if g), None)
-            if goal is None or time.time() > deadline:
+            # go == 0 (the VLM sees no promising view) only drops the preference: in m3_y it said
+            # so for the bed after two spots, with the bedroom not yet looked at
+            goal = self.coverage_goal(views[go - 1][1] if go else None, deadline)
+            if goal is None or self.now() > deadline:
                 return None
             self.say(f"I don't see the {target} here. Looking further that way.")
-            g = NavigateToPose.Goal()
-            g.pose = PoseStamped()
-            g.pose.header.frame_id = "map"
-            g.pose.pose.position.x, g.pose.pose.position.y = goal[0], goal[1]
-            g.pose.pose.orientation.z, g.pose.pose.orientation.w = math.sin(goal[2] / 2), math.cos(goal[2] / 2)
-            if self.send(self.nav, g, deadline) != GoalStatus.STATUS_SUCCEEDED:
+            if not self.go_to(goal, deadline):
                 return None
         return None
+
+    def usable_hit(self, target, hit):
+        """An unreachable sighting may be a false box; keep searching instead of ending early."""
+        goal, rng, bearing = hit
+        if goal is not None and rng <= MAX_RANGE:
+            return True
+        pose = self.pose()
+        if pose is None:
+            return False
+        obj = np.array(pose[:2]) + rng * np.array([math.cos(bearing), math.sin(bearing)])
+        step = (self.close_in(obj, side=True) if rng <= MAX_RANGE else
+                self.close_in(obj) or self.close_in(obj, min_range=1.5))
+        if step is not None:
+            return True
+        self._last_sighting = {"target": target, "object": obj.tolist()}
+        self.dump_costmap(f"{target}: no reachable viewpoint for sighting")
+        self.get_logger().info(f"The {target} sighting has no reachable viewpoint; continuing the search.")
+        return False
+
+    def go_to(self, goal, deadline):
+        g = NavigateToPose.Goal()
+        g.pose = PoseStamped()
+        g.pose.header.frame_id = "map"
+        g.pose.pose.position.x, g.pose.pose.position.y = goal[0], goal[1]
+        g.pose.pose.orientation.z, g.pose.pose.orientation.w = math.sin(goal[2] / 2), math.cos(goal[2] / 2)
+        return self.send(self.nav, g, deadline) == GoalStatus.STATUS_SUCCEEDED
 
     def turn(self, angle):
         spin = Spin.Goal()
