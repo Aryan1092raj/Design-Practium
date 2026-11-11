@@ -568,16 +568,16 @@ class VoiceNav(Node):
         Returns 1-based view numbers, 0 for none."""
         n = len(views)
         text = self.ask([v[0] for v in views],
-                        f"These {n} photos were taken from one spot, turning left 90 degrees "
-                        f"between photos (photo 1 ahead, photo 2 left, photo 3 behind, photo 4 "
-                        f"right). I am looking for a {target}. Is a {target} in any photo? If "
+                        f"These {n} photos were taken from one spot, turning left {360 // n} degrees "
+                        f"between photos (photo 1 ahead, photo {n // 2 + 1} behind). "
+                        f"I am looking for a {target}. Is a {target} in any photo? If "
                         f"not, which photo most likely leads to a {target}, for example a "
                         f"doorway or a room where a {target} is usually found? Reply JSON "
                         f'{{"found": <photo number or 0>, "go": <photo number or 0>}}; '
                         f"go is 0 if no photo looks promising.")
         nums = [re.search(rf'"{k}"\s*:\s*(\d+)', text) for k in ("found", "go")]
         seen, go = (int(m[1]) if m and 0 <= int(m[1]) <= n else 0 for m in nums)
-        self.get_logger().info(f"VLM 4-view answer for '{target}': {text.strip()!r}")
+        self.get_logger().info(f"VLM {n}-view answer for '{target}': {text.strip()!r}")
         return seen, go
 
     def coverage(self, pose=None):
@@ -759,9 +759,17 @@ class VoiceNav(Node):
         return None
 
     def ground(self, cam, target):
-        f = self.frames[cam]
+        end = time.monotonic() + 1.0
+        f = dict(self.frames[cam])  # snapshot: the VLM call below takes over a second, and a depth
+        # frame arriving meanwhile would be paired with the box and stamp of the older colour frame
         if len(f) < 3:
             return None
+        while abs((Time.from_msg(f["rgb"].header.stamp)
+                   - Time.from_msg(f["depth"].header.stamp)).nanoseconds) > 1e8:
+            if self.cancelled.is_set() or time.monotonic() >= end:
+                return None
+            time.sleep(0.05)
+            f = dict(self.frames[cam])
         stamp = Time.from_msg(f["depth"].header.stamp)
         now = self.get_clock().now()
         if any((now - Time.from_msg(f[k].header.stamp)).nanoseconds > 1e9 for k in ("rgb", "depth")):
@@ -781,44 +789,57 @@ class VoiceNav(Node):
         except Exception as e:  # tf2 raises several unrelated exception types
             self.get_logger().warn(f"tf: {e}")
             return None
-        # central half of the box, nearest quartile: skips background seen around the object
-        u0, u1 = max(int(x1 + (x2 - x1) / 4), 0), min(int(x2 - (x2 - x1) / 4) + 1, w)
-        v0, v1 = max(int(y1 + (y2 - y1) / 4), 0), min(int(y2 - (y2 - y1) / 4) + 1, h)
-        patch = depth[v0:v1, u0:u1]
-        vv, uu = np.mgrid[v0:v1, u0:u1]
-        ok = np.isfinite(patch) & (patch > 0.2)
-        if not ok.any():
-            return None
-        k = f["info"].k
-        zs = patch[ok]
-        # Drop the floor: the box of a low object (a sofa) includes the floor in front of it,
-        # which pulled the estimate 1.5 m short in sim. Floor points are the lowest in the patch.
-        height = (np.stack([(uu[ok] - k[2]) / k[0] * zs, (vv[ok] - k[5]) / k[4] * zs, zs], 1)
-                  @ r.T + t)[:, 2]
-        above = zs[height > height.min() + 0.10]
-        z = float(np.percentile(above if above.size else zs, 25))
-        u, v = (x1 + x2) / 2, (y1 + y2) / 2
-        point = np.array([(u - k[2]) / k[0] * z, (v - k[5]) / k[4] * z, z])  # optical frame
-        obj = (r @ point + t)[:2]
         chair = np.array([chair.x, chair.y])
-        raw, obj = obj, self.near_face(chair, obj)
-        self.get_logger().info(f"{target}: map ({obj[0]:.2f}, {obj[1]:.2f}) (depth ({raw[0]:.2f}, "
-                               f"{raw[1]:.2f})), chair at ({chair[0]:.2f}, {chair[1]:.2f})")
-        d = obj - chair
-        return self.standoff(obj, chair), float(np.hypot(*d)), math.atan2(d[1], d[0])
+        k = f["info"].k
+        first = None
+        # The whole box first. A wide object's centre can sit where the chair has no room (m3_v:
+        # the middle of an L-shaped sofa, in the nook behind its table), so then its left and
+        # right halves: standing in front of either end is still arriving at the object.
+        for bx1, bx2 in ((x1, x2), (x1, (x1 + x2) / 2), ((x1 + x2) / 2, x2)):
+            # central half of the box, nearest quartile: skips background seen around the object
+            u0, u1 = max(int(bx1 + (bx2 - bx1) / 4), 0), min(int(bx2 - (bx2 - bx1) / 4) + 1, w)
+            v0, v1 = max(int(y1 + (y2 - y1) / 4), 0), min(int(y2 - (y2 - y1) / 4) + 1, h)
+            patch = depth[v0:v1, u0:u1]
+            vv, uu = np.mgrid[v0:v1, u0:u1]
+            ok = np.isfinite(patch) & (patch > 0.2)
+            if not ok.any():
+                continue
+            zs = patch[ok]
+            # Drop the floor: the box of a low object (a sofa) includes the floor in front of it,
+            # which pulled the estimate 1.5 m short in sim. Floor points are the lowest in the patch.
+            height = (np.stack([(uu[ok] - k[2]) / k[0] * zs, (vv[ok] - k[5]) / k[4] * zs, zs], 1)
+                      @ r.T + t)[:, 2]
+            above = zs[height > height.min() + 0.10]
+            z = float(np.percentile(above if above.size else zs, 25))
+            u, v = (bx1 + bx2) / 2, (y1 + y2) / 2
+            point = np.array([(u - k[2]) / k[0] * z, (v - k[5]) / k[4] * z, z])  # optical frame
+            raw = (r @ point + t)[:2]
+            obj = self.near_face(chair, raw)
+            self.get_logger().info(f"{target}: map ({obj[0]:.2f}, {obj[1]:.2f}) (depth ({raw[0]:.2f}, "
+                                   f"{raw[1]:.2f})), chair at ({chair[0]:.2f}, {chair[1]:.2f})")
+            d = obj - chair
+            hit = self.standoff(obj, chair), float(np.hypot(*d)), math.atan2(d[1], d[0])
+            first = first or hit
+            if hit[0] is not None or hit[1] > MAX_RANGE:  # far sightings only need the bearing
+                return hit if hit[0] is not None else first
+        return first
 
-    def ask(self, imgs, prompt):
-        """imgs: one RGB image or a list of them, sent in one message."""
+    def ask(self, imgs, prompt, schema=None):
+        """imgs: one RGB image or a list of them, sent in one message. schema: JSON schema the
+        reply must follow (llama-server response_format)."""
         imgs = imgs if isinstance(imgs, list) else [imgs]
         jpgs = [base64.b64encode(cv2.imencode(".jpg", cv2.cvtColor(i, cv2.COLOR_RGB2BGR))[1]).decode()
                 for i in imgs]
-        try:
-            r = requests.post(VLM_URL, timeout=60, json={
-                "temperature": 0, "max_tokens": 120,
+        body = {"temperature": 0, "max_tokens": 120,
                 "messages": [{"role": "user", "content": [
                     *({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + j}}
                       for j in jpgs),
-                    {"type": "text", "text": prompt}]}]})
+                    {"type": "text", "text": prompt}]}]}
+        if schema:
+            body["response_format"] = {"type": "json_schema",
+                                       "json_schema": {"name": "reply", "schema": schema}}
+        try:
+            r = requests.post(VLM_URL, timeout=60, json=body)
             return r.json()["choices"][0]["message"]["content"]
         except (requests.RequestException, KeyError, IndexError, ValueError) as e:
             self.get_logger().error(f"VLM request failed: {e}")
@@ -837,18 +858,60 @@ class VoiceNav(Node):
         y1, y2 = (min(max(int(float(m[i]) * VLM_H / 1000), 0), VLM_H) for i in (2, 4))
         if x2 - x1 < 4 or y2 - y1 < 4:
             return None
-        # The detector sometimes boxes something when the target is absent; a yes/no on the crop,
-        # padded by half the box on each side for context, rejects those. On saved sim views it
-        # passed no false box (a bare tight crop passed one and lost two real ones), but it also
-        # drops small objects such as a dumbbell, which a closer look after exploring can find.
-        # A full-resolution, min-size crop padded black off the frame did worse on the same views:
-        # two false boxes at the frame edge and one real dumbbell lost.
-        pw, ph = (x2 - x1) // 2, (y2 - y1) // 2
-        crop = img[max(y1 - ph, 0):min(y2 + ph, VLM_H), max(x1 - pw, 0):min(x2 + pw, VLM_W)]
-        answer = self.ask(crop, f"Is there a {target} in the middle of this image? "
-                                f"Answer only yes or no.").strip().lower()
-        self.get_logger().info(f"VLM box {[x1, y1, x2, y2]} for '{target}', verify: {answer}")
-        return [x1, y1, x2, y2] if answer.startswith("yes") else None
+        # The detector sometimes boxes something when the target is absent. The check draws the box
+        # in red on the full frame and asks for the object's label from a fixed list, so the
+        # question doesn't name the target. On the 16 saved sim views this gave 1 error in 92
+        # (0 false boxes); the old yes/no on a padded crop gave 6 (4 false boxes, among them m3_r's
+        # "refrigerator" on wall portraits 10.9 m from the fridge), and a classify on the crop lost
+        # real objects because the crop holds several.
+        marked = cv2.rectangle(img.copy(), (x1, y1), (x2, y2), (255, 0, 0), 2)
+        # Keep the rider's phrase in the detector; only the independent box check uses a generic
+        # label. Resolve synonyms/modifiers once per phrase, with no images or place information.
+        if not hasattr(self, "_verify_targets"):
+            self._verify_targets = {}
+        if target not in self._verify_targets:
+            expected = target
+            if target not in CLASSES:
+                mapped = self.ask([], f"Object phrase: {json.dumps(target)}. "
+                                     f"Allowed labels: {json.dumps(CLASSES + ['none'])}. "
+                                     "If the phrase is a synonym or an adjective-modified form "
+                                     "of a label, return that label. Ignore articles. "
+                                     'Otherwise return {"label":"none"}. Do not match related '
+                                     "objects, parts, or objects with similar purposes. "
+                                     "The label other only matches the word other; all unlisted "
+                                     "objects must use none.",
+                                  {"type": "object", "properties": {"label": {
+                                      "type": "string", "enum": CLASSES + ["none"]}},
+                                   "required": ["label"]})
+                try:
+                    candidate = json.loads(mapped).get("label")
+                except (ValueError, AttributeError):
+                    candidate = None
+                if candidate in CLASSES:
+                    expected = candidate
+            self._verify_targets[target] = expected
+            self.get_logger().info(f"VLM verify label for '{target}': {expected}")
+        expected = self._verify_targets[target]
+        labels = CLASSES if expected in CLASSES else [target] + CLASSES
+        text = self.ask(marked, "What is the main object inside the red box? Pick the closest "
+                                "label.", {"type": "object", "properties": {"label": {"enum": labels}},
+                                           "required": ["label"]})
+        try:
+            label = json.loads(text).get("label")
+        except (ValueError, AttributeError):
+            label = None
+        self.get_logger().info(f"VLM box {[x1, y1, x2, y2]} for '{target}', verify: {label}")
+        dump = os.environ.get("VLM_NAV_DUMP")  # bench: keep each verified frame for offline replay
+        if dump:
+            cv2.imwrite(os.path.join(dump, f"verify_{int(self.now())}_{target}_{label}_"
+                                           f"{x1}_{y1}_{x2}_{y2}.jpg".replace(" ", "-")),
+                        cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        # A near-synonym label only counts on a box big enough to judge: the six kin-labelled
+        # wardrobe boxes of m3_z to m3_ab were 189-252 px tall on the real wardrobe and 29-94 px on
+        # far kitchen cabinets (one sent the chair 6 m the wrong way in m3_ab).
+        big = y2 - y1 >= VLM_H / 3 or x2 - x1 >= VLM_W / 3
+        ok = label == expected or (big and label in KIN.get(expected, ()))
+        return [x1, y1, x2, y2] if ok else None
 
     def standoff(self, obj, chair):
         """Reachable standoff on any side, trying the chair's side first."""
@@ -927,9 +990,20 @@ class VoiceNav(Node):
         return 0 <= self.cost(p) < limit
 
 
+def transcribe_audio(stt, audio):
+    """Decode 16 kHz float audio without priming; return text and raw segments for checks."""
+    segments, _ = stt.transcribe(audio, language="en", beam_size=1, vad_filter=True,
+                                 condition_on_previous_text=False)
+    segments = list(segments)
+    # whisper_check.py: mic noise had no_speech_prob 0.88-0.91; spoken TTS commands
+    # were <= 0.30, with avg_logprob down to -0.88 ("cancel"). Both checks must pass.
+    text = " ".join(s.text for s in segments
+                    if s.no_speech_prob <= 0.5 and s.avg_logprob >= -0.95).strip()
+    return text, segments
+
+
 def listen(node, stt):
     """Energy-gated recording from the default ALSA mic; each utterance goes to faster-whisper."""
-    hint = "go to the table. take me to the door. stop."
     noise, buf, quiet = None, [], 0
     for chunk in mic_chunks(node):
         a =np.frombuffer(chunk, np.int16).astype(np.float32) / 32768.0
@@ -943,9 +1017,7 @@ def listen(node, stt):
             if quiet > 25 or len(buf) > 300:  # 0.75 s of silence ends it, 9 s max
                 audio, buf = np.concatenate(buf), []
                 if len(audio) > 0.4 * 16000:
-                    segments, _ = stt.transcribe(audio, language="en", beam_size=1,
-                                                 vad_filter=True, initial_prompt=hint)
-                    text = " ".join(s.text for s in segments).strip()
+                    text, _ = transcribe_audio(stt, audio)
                     if text:
                         node.get_logger().info(f"heard: {text}")
                         node.on_text(text)

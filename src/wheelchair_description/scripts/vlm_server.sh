@@ -23,4 +23,8 @@ GGML_BACKEND_PATH=$OLLAMA_LIB/cuda_v13/libggml-cuda.so \
 LD_LIBRARY_PATH=$OLLAMA_LIB/cuda_v13:$OLLAMA_LIB \
 exec "$OLLAMA_LIB/llama-server" --model "$MODEL" --mmproj "$MMPROJ" --mmproj-offload -ngl 99 \
   -c 4096 --port 8091 --host 127.0.0.1 --no-webui --jinja \
-  --image-min-tokens 64 --image-max-tokens 512
+  --image-min-tokens 64 --image-max-tokens 512 \
+  --cache-ram 0 --parallel 1
+# --cache-ram 0: the host-RAM prompt cache (default 8 GB) grew the server from 1.5 to 2.2 GB within
+# one sim run and earlyoom killed it twice (m3_u, m3_w). Every request is a new image, so the
+# cache never hits. One slot for the same reason: vlm_nav sends one request at a time.
