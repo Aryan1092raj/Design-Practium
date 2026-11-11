@@ -580,26 +580,182 @@ class VoiceNav(Node):
         self.get_logger().info(f"VLM 4-view answer for '{target}': {text.strip()!r}")
         return seen, go
 
-    def explore_goal(self, yaw, step=EXPLORE_STEP, avoid=()):
-        """A free spot up to step metres along yaw, short of the first blocked cell, so the chair
-        heads into the open space the view shows instead of a room behind a wall. Skips spots
-        within REVISIT of the points in avoid."""
-        pose = self.pose()
-        if pose is None:
+    def coverage(self, pose=None):
+        """Snapshot geometry, turn-safe lattice spots and 4-connected BFS path lengths.
+        OpenCV expands whole wavefronts; there is no Python loop over map cells."""
+        m = self.costmap
+        pose = self.pose() if pose is None else pose
+        if m is None or pose is None:
             return None
-        for a in (yaw, yaw + 0.4, yaw - 0.4):
-            at = lambda d: (pose[0] + d * math.cos(a), pose[1] + d * math.sin(a))
-            k, n = 0, int(step / 0.05 + 1e-6)  # 5 cm samples; integers so the cap is exact
-            while k < n and self.free(at((k + 1) * 0.05)):
-                k += 1
-            d = k * 0.05 - (BACKOFF if k < n else 0.0)
-            # the goal itself on a zero-cost cell: goals in the inflation edge drew "collision
-            # ahead" and a recovery in sim. It also needs room for the 4-view scan's spins: a
-            # cost-0 goal 0.63 m from the dumbbell rack let the corners clip it and wedge the chair
-            while d >= 1.0 and not (self.free(at(d), 1) and self.clear(at(d), a)):
-                d -= 0.05
-            if d >= 1.0 and all(math.dist(at(d), s) > REVISIT for s in avoid):
-                return (*at(d), a)
+        res, h, w = m.info.resolution, m.info.height, m.info.width
+        ox, oy = m.info.origin.position.x, m.info.origin.position.y
+        key = (res, h, w, ox, oy)
+        grid = np.asarray(m.data, dtype=np.int16).reshape(h, w)
+        c = getattr(self, "_coverage", None)
+        revision = getattr(self, "_noise_revision", 0)
+        if c is None or c["key"] != key or c.get("noise_revision") != revision or not np.array_equal(c["grid"], grid):
+            open_sight = (grid >= 0) & (grid < 100)
+            # Turn room is measured to solid structure only. The obstacle layer leaves thousands
+            # of one-cell lidar marks beside the walls (4603 of 4777 lethal blobs in m3_x were
+            # <= 4 cells), which cut the 70 spots of the bare map to 42 and left none that looked
+            # into the bedroom. A spot is still a cost-0 cell, so the inflation layer keeps it its
+            # own radius away from every such mark.
+            # by area, not cell count: 16 cm2 is 4 cells at 0.02 m and none at 0.05 m, where one
+            # cell could be a real pole
+            # Size/proximity alone is insufficient: discard only scan-confirmed free tiny marks.
+            solid = obstacle_mask(self, m, grid)
+            clearance = cv2.distanceTransform(np.pad((~solid).astype(np.uint8), 1),
+                                              cv2.DIST_L2, cv2.DIST_MASK_PRECISE)[1:-1, 1:-1] * res
+            # 0.25 m lattice: on 0.5 m the doorway spot that looks into the sim bedroom missed
+            # the turn room by 3 cm (1.33 m at the lattice point, 1.48 m a step away)
+            js = (np.arange(0, h * res, 0.25) / res).astype(int)
+            ids = (np.arange(0, w * res, 0.25) / res).astype(int)
+            jj, ii = np.meshgrid(js, ids, indexing="ij")
+            safe = (grid[jj, ii] == 0) & (clearance[jj, ii] > TURN_CLEAR + AXLE_BACK)
+            cells = np.column_stack((jj[safe], ii[safe]))
+            # At 5 m the rays are at most one cell apart; half-cell radial steps catch diagonals.
+            angles = np.linspace(0, 2 * math.pi, math.ceil(2 * math.pi * 5 / res), endpoint=False)
+            steps = np.arange(0, 5 / res + 0.25, 0.5)
+            rays = (np.floor(0.5 + np.sin(angles[:, None]) * steps).astype(int),
+                    np.floor(0.5 + np.cos(angles[:, None]) * steps).astype(int))
+            c = {"key": key, "grid": grid.copy(), "open": open_sight, "cells": cells,
+                 "noise_revision": revision,
+                 "xy": np.column_stack((ox + (cells[:, 1] + 0.5) * res,
+                                        oy + (cells[:, 0] + 0.5) * res)),
+                 "rays": rays, "views": {}, "start": None}
+            self._coverage = c
+        if getattr(self, "_seen_key", None) != key or getattr(self, "seen_floor", None) is None:
+            self.seen_floor = np.zeros((h, w), bool)
+            self._seen_key = key
+        start = (math.floor((pose[1] - oy) / res), math.floor((pose[0] - ox) / res))
+        if start != c["start"]:
+            path = np.full((h, w), np.inf, dtype=np.float32)
+            nav = ((grid >= 0) & (grid <= 98)).astype(np.uint8)
+            wave, visited = np.zeros_like(nav), np.zeros_like(nav)
+            j, i = start
+            if 0 <= j < h and 0 <= i < w:
+                if not nav[j, i]:  # parked next to an object, inside the inscribed band
+                    r = int(1.0 / res)
+                    j0, i0 = max(j - r, 0), max(i - r, 0)
+                    jj, ii = np.nonzero(nav[j0:j + r + 1, i0:i + r + 1])
+                    if jj.size:
+                        k = np.argmin((jj + j0 - j) ** 2 + (ii + i0 - i) ** 2)
+                        j, i = jj[k] + j0, ii[k] + i0
+                if nav[j, i]:
+                    wave[j, i] = 1
+            cross = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], np.uint8)
+            hops = 0
+            while cv2.countNonZero(wave):
+                path[wave != 0] = hops * res
+                visited |= wave
+                wave = cv2.dilate(wave, cross) & nav & (1 - visited)
+                hops += 1
+            c["start"], c["path"] = start, path
+        return c
+
+    def visible_cells(self, c, cell):
+        """Flat cell indices seen over 360 degrees; lethal/unknown cells end each ray."""
+        cell = tuple(cell)
+        if cell not in c["views"]:
+            h, w = c["grid"].shape
+            jj, ii = cell[0] + c["rays"][0], cell[1] + c["rays"][1]
+            inside = (jj >= 0) & (jj < h) & (ii >= 0) & (ii < w)
+            indices = np.clip(jj, 0, h - 1) * w + np.clip(ii, 0, w - 1)
+            visible = np.logical_and.accumulate(inside & c["open"].ravel()[indices], axis=1)
+            mask = np.zeros(h * w, bool)
+            mask[indices[visible]] = True
+            c["views"][cell] = np.flatnonzero(mask)
+        return c["views"][cell]
+
+    def mark_seen(self):
+        """Record floor seen from a completed scan; retained until the next command."""
+        c = self.coverage()
+        if c is not None:
+            self.seen_floor.ravel()[self.visible_cells(c, c["start"])] = True
+
+    def coverage_goal(self, preference=None, deadline=float("inf"), nearest=False):
+        """Best unseen-floor gain per travel cost; Nav2 can route through doorways. With nearest,
+        the closest turn-safe spot at least 0.5 m away, whatever it shows."""
+        pose = self.pose()
+        c = self.coverage(pose)
+        if c is None:
+            return None
+        paths = c["path"][tuple(c["cells"].T)]
+        eligible = (paths >= 1.5) & np.isfinite(paths) & (paths / 0.4 + 25 <= deadline - self.now())
+        if nearest:
+            near = np.flatnonzero(np.isfinite(paths) & (paths >= 0.5))
+            if not near.size:
+                return None
+            x, y = c["xy"][near[np.argmin(paths[near])]]
+            return float(x), float(y), math.atan2(y - pose[1], x - pose[0])
+        # every unseen non-obstacle cell counts, not only where the chair's centre can go: a
+        # tight room has little of that, and m3_x gave up with the whole bedroom unseen
+        floor = (c["open"] & ~self.seen_floor).ravel()
+        best, score, best_path = None, 0.0, float("inf")
+        fallback, fallback_score, fallback_path = None, 0.0, float("inf")
+        for k in np.flatnonzero(eligible):
+            gain = np.count_nonzero(floor[self.visible_cells(c, c["cells"][k])]) * c["key"][0] ** 2
+            if gain < 1.0:
+                continue
+            x, y = c["xy"][k]
+            yaw = math.atan2(y - pose[1], x - pose[0])
+            value = gain / (paths[k] + 2)
+            if preference is not None and abs(math.atan2(math.sin(yaw - preference),
+                                                         math.cos(yaw - preference))) <= math.pi / 4:
+                value *= 1.5
+            if gain < 4.0:
+                if value > fallback_score:
+                    fallback, fallback_score = (float(x), float(y), yaw), value
+                    fallback_path = paths[k]
+            elif value > score:
+                best, score = (float(x), float(y), yaw), value
+                best_path = paths[k]
+        if best is None:
+            best, best_path = fallback, fallback_path
+        if best is None or best_path / 0.4 + 25 > deadline - self.now():
+            j, i = c["start"]
+            inside = 0 <= j < c["grid"].shape[0] and 0 <= i < c["grid"].shape[1]
+            self.get_logger().info(
+                f"no spot left to explore: chair cell cost {c['grid'][j, i] if inside else 'off map'}, "
+                f"{np.count_nonzero(np.isfinite(paths))} of {len(paths)} spots reachable, "
+                f"{np.count_nonzero(eligible)} in time, {np.count_nonzero(floor) * c['key'][0] ** 2:.0f} "
+                f"m2 of floor unseen, {deadline - self.now():.0f} s left")
+            dump = os.environ.get("VLM_NAV_DUMP")  # bench: keep the costmap for an offline replay
+            if dump:
+                np.save(os.path.join(dump, f"costmap_{int(self.now())}.npy"), c["grid"])
+            return None
+        return best
+
+    def close_in(self, obj, side=False, min_range=MIN_SIGHT):
+        """Nearest reachable turn-safe viewpoint MIN_SIGHT from a far depth estimate. With side,
+        one that sees a near object from at least 60 degrees round it instead.
+        Below MIN_SIGHT, prefer the farthest eligible spot to keep low objects in frame."""
+        pose = self.pose()
+        c = self.coverage(pose)
+        if c is None:
+            return None
+        ranges = np.linalg.norm(c["xy"] - obj, axis=1)
+        reachable = np.isfinite(c["path"][tuple(c["cells"].T)])
+        eligible = reachable & (ranges >= min_range) & (ranges <= math.dist(pose[:2], obj) - 0.5)
+        if side:
+            here = math.atan2(pose[1] - obj[1], pose[0] - obj[0])
+            there = np.arctan2(c["xy"][:, 1] - obj[1], c["xy"][:, 0] - obj[0])
+            turn = np.abs(np.arctan2(np.sin(there - here), np.cos(there - here)))
+            eligible = reachable & (ranges >= min_range) & (ranges <= MAX_RANGE) & (turn >= math.pi / 3)
+        res, h, w, ox, oy = c["key"]
+        if min_range < MIN_SIGHT:
+            eligible &= ranges <= MIN_SIGHT
+        order = np.argsort(-ranges if min_range < MIN_SIGHT else ranges)
+        for k in order:
+            if not eligible[k]:
+                continue
+            p, rng = c["xy"][k], ranges[k]
+            d = obj - p
+            line = p + np.arange(0, rng - 1.0, res / 2)[:, None] * d / rng
+            ii = np.floor((line[:, 0] - ox) / res).astype(int)
+            jj = np.floor((line[:, 1] - oy) / res).astype(int)
+            if np.all((ii >= 0) & (ii < w) & (jj >= 0) & (jj < h)) and np.all(c["open"][jj, ii]):
+                return float(p[0]), float(p[1]), math.atan2(d[1], d[0])
         return None
 
     def ground(self, cam, target):
