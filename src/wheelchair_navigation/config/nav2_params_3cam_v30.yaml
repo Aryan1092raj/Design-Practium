@@ -95,6 +95,9 @@
 #   max_velocity, the real-chair cruise for every mode (at 0.50 the real
 #   chair's map pose ran ahead of it). Accel 0.40, decel -0.50 and angular
 #   limits stay as above; FollowPathReverse is unchanged.
+# CHANGES 2026-11-11 (Mode 3 review):
+#   1. SmacPlanner2D allow_unknown true -> false, matching coverage BFS so
+#      exploration routes stay on mapped floor.
 ###############################################################################
 ###############################################################################
 # AMCL - RPLIDAR S3 OPTIMIZED
@@ -385,7 +388,7 @@ planner_server:
       tolerance: 0.20
       downsample_costmap: true     # plan at 0.04 m: at the map's 0.02 m, 17 m routes hit max_iterations
       downsampling_factor: 2
-      allow_unknown: true
+      allow_unknown: false
       max_iterations: 500000
       max_on_approach_iterations: 1000
       max_planning_time: 3.0

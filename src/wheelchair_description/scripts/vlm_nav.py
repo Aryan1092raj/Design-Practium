@@ -306,39 +306,62 @@ class VoiceNav(Node):
 
     # ---- one command, start to finish ---------------------------------------------------
     def run(self, target):
-        deadline = time.time() + SEARCH_TIME
+        while self.now() == 0 and not self.cancelled.is_set():
+            time.sleep(0.1)  # use_sim_time before the first /clock: a deadline from 0 is already past
+        deadline = self.now() + SEARCH_TIME
+        self.command_deadline = deadline + 120
+        self.seen_floor = None  # coverage belongs to this command, including its close-in re-looks
         try:
             for attempt in range(APPROACHES):
-                # a re-look after driving toward an object already seen is not a search, so the
-                # 3-minute limit does not cut it short
-                found = self.find(target, deadline if attempt == 0 else time.time() + 60)
+                # a re-look after driving toward an object already seen gets at least a minute,
+                # and whatever is left of the search: in m3_ab a false far sighting led to a
+                # re-look that found nothing, and its 60 s ended the search with 8 minutes unused
+                look_deadline = min(deadline if attempt == 0 else max(deadline, self.now() + 60),
+                                    self.command_deadline)
+                found = self.find(target, look_deadline) if self.now() < look_deadline else None
                 if self.cancelled.is_set():
                     return
-                if found is None:
+                if found is None or self.now() >= self.command_deadline:
                     self.say(f"Sorry, the {target} was not found.")
                     return
                 goal, rng, bearing = found
-                if rng <= MAX_RANGE or attempt == APPROACHES - 1:
+                pose = self.pose()
+                obj = (np.array(pose[:2]) + rng * np.array([math.cos(bearing), math.sin(bearing)])
+                       if pose else None)
+                self._last_sighting = {"target": target, "object": obj.tolist() if obj is not None else None}
+                if rng > MAX_RANGE and attempt == APPROACHES - 1:
+                    self.say(f"I see the {target}, but I can't get closer to it.")
+                    return
+                if rng <= MAX_RANGE:
                     if goal is None:
+                        # Seen from one side, a piece of furniture can have nothing free in front
+                        # (m3_z: the sofa from the east, behind its table). Look from another side.
+                        step = (self.close_in(obj, side=True)
+                                if obj is not None and attempt < APPROACHES - 1 else None)
+                        if step and self.drive(target, *step, final=False, announce=attempt == 0):
+                            continue
                         self.say(f"I see the {target}, but I can't find a free spot next to it.")
                     elif rng < STANDOFF[0] + 0.3:
                         self.say(f"I am already next to the {target}.")
                     else:
                         self.drive(target, *goal, final=True, announce=attempt == 0)
                     return
-                # Far sightings: in sim, objects seen at 5-7 m were placed metres away from where
-                # they are (a fridge outside the kitchen). Close in along the bearing, look again.
-                # straight along the bearing when the line is open, else let Nav2 route to the
-                # rough estimate (the fridge seen 12 m away from the bedroom, behind walls)
-                # shortcut: the Nav2 fallback goes to the standoff, inside MIN_SIGHT, so a floor
-                # object seen behind a wall can drop out of view; stop MIN_SIGHT short if that shows up
-                step = self.explore_goal(bearing, min(EXPLORE_STEP, rng - MIN_SIGHT)) or goal
+                # Route to a turn-safe viewpoint nearer the rough depth estimate, then re-look.
+                # The existing standoff fallback can be inside MIN_SIGHT for low objects.
+                # A tight room may hold no spot MIN_SIGHT away (m3_ad: the bed seen at 4.1 m from
+                # the bedroom doorway, "can't get closer"); a nearer one is better than giving up.
+                step = ((self.close_in(obj) or self.close_in(obj, min_range=1.5))
+                        if obj is not None else None)
                 if step is None:
                     self.say(f"I see the {target}, but I can't get closer to it.")
                     return
                 if not self.drive(target, *step, final=False, announce=attempt == 0):
                     return  # drive() has said why
+        except Exception:
+            self.cancel_goal()
+            raise
         finally:
+            self.command_deadline = None
             self.busy = False
 
     def drive(self, target, x, y, yaw, final, announce=True):
@@ -365,36 +388,98 @@ class VoiceNav(Node):
         """Nav2 ignores the goal heading (yaw_goal_tolerance 6.28 in the chair's params), so turn
         in place to face the target with the behaviour server's Spin."""
         try:
-            q = self.tf.lookup_transform("map", "base_link", Time()).transform.rotation
+            t = self.tf.lookup_transform("map", "base_link", Time()).transform
         except Exception as e:  # tf2 raises several unrelated exception types
             self.get_logger().warn(f"tf: {e}")
             return
-        turn = yaw - 2 * math.atan2(q.z, q.w)
+        heading = 2 * math.atan2(t.rotation.z, t.rotation.w)
+        if self.costmap is None or not self.clear((t.translation.x, t.translation.y), heading):
+            self.get_logger().info("No room to face the target here; keeping the arrival heading.")
+            return
+        turn = yaw - heading
         turn = math.atan2(math.sin(turn), math.cos(turn))
-        if abs(turn) > 0.3 and not self.cancelled.is_set():
+        if abs(turn) > 0.1 and not self.cancelled.is_set():  # 0.3 skipped m3_p's 15.6° wardrobe fix
             spin = Spin.Goal()
             spin.target_yaw = turn
             spin.time_allowance.sec = 30
             self.send(self.spin_client, spin)
 
+    def cancel_goal(self, spin=False):
+        """Cancel the active action, including a pending acceptance; wait at most 2 s.
+        The worker uses the running executor; shutdown spins it here before closing ROS."""
+        end = time.monotonic() + 2.0
+        with self.goal_lock:
+            self.cancelled.set()
+            handle, response = self.goal_handle, self.goal_response
+        while handle is None and response is not None and not response.done() and time.monotonic() < end:
+            if spin:
+                rclpy.spin_once(self, timeout_sec=0.05)
+            else:
+                time.sleep(0.05)
+        if handle is None and response is not None and response.done():
+            handle = response.result()
+        if handle is not None and handle.accepted:
+            future = handle.cancel_goal_async()
+            while not future.done() and time.monotonic() < end:
+                if spin:
+                    rclpy.spin_once(self, timeout_sec=0.05)
+                else:
+                    time.sleep(0.05)
+
     def send(self, client, goal, deadline=None):
+        command_deadline = self.command_deadline
+        if command_deadline is not None:
+            deadline = min(deadline, command_deadline) if deadline is not None else command_deadline
+        if self.cancelled.is_set() or (deadline is not None and self.now() >= deadline):
+            return None
         if not client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(f"action server {client._action_name} not available")
             return None
-        handle = wait(client.send_goal_async(goal))
+        with self.goal_lock:
+            if self.cancelled.is_set() or (deadline is not None and self.now() >= deadline):
+                return None
+            response = client.send_goal_async(goal)
+            self.goal_response = response
+        end = time.monotonic() + 5.0
+        while not response.done() and not self.cancelled.is_set() and time.monotonic() < end:
+            if deadline is not None and self.now() >= deadline:
+                break
+            time.sleep(0.05)
+        if not response.done():
+            # Acceptance may arrive after the bounded wait: it must still be cancelled.
+            def cancel_late(future):
+                handle = future.result()
+                if handle is not None and handle.accepted:
+                    handle.cancel_goal_async()
+                with self.goal_lock:
+                    if self.goal_response is future:
+                        self.goal_response = None
+            response.add_done_callback(cancel_late)
+            self.cancelled.set()
+            return None
+        handle = response.result()
+        with self.goal_lock:
+            self.goal_response = None
+            if handle.accepted:
+                self.goal_handle = handle
         if not handle.accepted:
             return None
-        self.goal_handle = handle
-        if self.cancelled.is_set():
-            handle.cancel_goal_async()
+        if self.cancelled.is_set() or (deadline is not None and self.now() >= deadline):
+            self.cancel_goal()
+            self.goal_handle = None
+            return None
         result = handle.get_result_async()
         while not result.done() and not nav2_gone(client, handle, self):
-            if deadline and time.time() > deadline:  # search time is up: stop exploring
-                handle.cancel_goal_async()
-                deadline = None
+            if self.cancelled.is_set() or (deadline is not None and self.now() >= deadline):  # search time is up: stop exploring
+                self.cancel_goal()
+                self.goal_handle = None
+                return None
             time.sleep(0.2)
         self.goal_handle = None
-        return result.result().status if result.done() else None
+        status = result.result().status if result.done() else None
+        if status == GoalStatus.STATUS_SUCCEEDED and not self.wait_localization():
+            return None
+        return status
 
     # ---- semantic search ----------------------------------------------------------------
     def find(self, target, deadline):
@@ -455,7 +540,7 @@ class VoiceNav(Node):
         # only a finished turn counts: an aborted spin left all four "views" on one heading, and
         # the direction the VLM picked from them was not the one it saw
         ok = self.send(self.spin_client, spin) == GoalStatus.STATUS_SUCCEEDED
-        time.sleep(1.0)  # fresh frames after the turn
+        # fresh frames after the turn: send() already waits for localization
         return ok
 
     def turn_to(self, yaw):
@@ -711,17 +796,24 @@ def listen(node, stt):
 
 
 def main():
-    rclpy.init()
+    # Keep ROS alive on Ctrl+C until the action cancellation has been processed.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = VoiceNav()
-    stt = WhisperModel("base.en", device="cpu", compute_type="int8")
-    threading.Thread(target=listen, args=(node, stt), daemon=True).start()
+    # mic:=false takes commands only from /voice/transcript (sim bench: room speech became goals in m3_q)
+    if node.declare_parameter("mic", True).value:
+        stt = WhisperModel("base.en", device="cpu", compute_type="int8")
+        threading.Thread(target=listen, args=(node, stt), daemon=True).start()
     threading.Thread(target=node.say, args=("Voice navigation ready.",), daemon=True).start()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        rclpy.try_shutdown()
+        try:
+            node.cancel_goal(spin=True)
+        finally:
+            node.destroy_node()
+            rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
