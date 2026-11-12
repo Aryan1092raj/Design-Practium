@@ -85,6 +85,17 @@ FREE_COST = 50  # global costmap cells below this count as free for a goal
 # Nav2's 0.15 m goal tolerance.
 AXLE_BACK = 0.32
 TURN_CLEAR = 1.32  # CAD: padded front reaches 1.04 m from axle; corner 1.167 m + 0.15 m goal tolerance
+SPIN_CLEAR = 1.20  # a spin in place sweeps the padded corner (1.167 m); clear() rounds to 24 cells at 0.05 m
+# Search viewpoints are axle positions with SPIN_CLEAR + SPOT_MARGIN to solid structure; the goal
+# puts base_link AXLE_BACK ahead along the approach. The margin absorbs an arrival heading ~45 deg
+# off (0.24 m axle shift). The old base_link rule (TURN_CLEAR + AXLE_BACK, 1.64 m) left 0 spots on
+# the real lab map, whose widest point is 1.54 m; this one leaves 62 (logs/inspect_live_162551).
+SPOT_MARGIN = 0.10
+# Tight rooms: a standoff with no turn circle is still allowed when the whole padded footprint
+# (urdf x -0.57..0.69, y +/-0.50 from base_link) plus this margin is free of lethal cells.
+FIT_MARGIN = 0.10
+FIT_STANDOFF = (1.0, 1.2, 1.3, 1.5, 1.7, 2.0)
+FIT_BOX = (-0.57, 0.69, 0.50)
 STOP = re.compile(r"\b(stop|halt|cancel)\b")
 GO = re.compile(r"\b(?:go|take me|bring me|drive|move|head|navigate)\b.*?\b(?:to|towards?|near)\s+"
                 r"(?:the |a |an |my )?(?P<t>[a-z ]+)")
@@ -129,6 +140,11 @@ def turn_obstacles(grid, res, cleared=None):
     return solid
 
 
+def spot_goal(x, y, yaw):
+    """base_link goal for an axle viewpoint (x, y) approached along yaw."""
+    return float(x + AXLE_BACK * math.cos(yaw)), float(y + AXLE_BACK * math.sin(yaw)), yaw
+
+
 def obstacle_mask(node, m, grid=None):
     revision = getattr(node, "_noise_revision", 0)
     cached = getattr(node, "_obstacles", None)
@@ -168,6 +184,11 @@ class VoiceNav(Node):
         scan_topic = self.declare_parameter("scan_topic", "/scan" if self.get_parameter(
             "use_sim_time").value else "/scan_fused").value
         self.create_subscription(LaserScan, scan_topic, self.on_scan, qos_profile_sensor_data)
+        self.diagnostic_scans = {}
+        for topic in ("/scan", "/scan_filtered", "/scan_fused"):
+            self.create_subscription(LaserScan, topic,
+                                     lambda msg, name=topic: self.diagnostic_scans.__setitem__(name, msg),
+                                     qos_profile_sensor_data)
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.spin_client = ActionClient(self, Spin, "spin")
         self.goal_handle = None
@@ -179,6 +200,7 @@ class VoiceNav(Node):
         self.create_subscription(TwistStamped, cmd_vel_topic, self.on_cmd_vel, qos_profile_sensor_data)
         self.busy = False
         self.cancelled = threading.Event()
+        self.reset_search_state()
 
     def now(self):
         """Node clock in seconds. Search limits count chair time: Gazebo ran at 0.6x real time in
@@ -219,6 +241,23 @@ class VoiceNav(Node):
             np.save(stem + ".npy", np.asarray(m.data, np.int16).reshape(m.info.height, m.info.width))
             if self._clear_counts is not None:
                 np.savez_compressed(stem + "_turn.npz", clear_counts=self._clear_counts)
+            scans = {}
+            for index, (topic, scan) in enumerate(dict(getattr(self, "diagnostic_scans", {})).items()):
+                prefix = f"scan{index}"
+                scans[prefix + "_topic"] = np.array(topic)
+                scans[prefix + "_ranges"] = np.asarray(scan.ranges, np.float32)
+                scans[prefix + "_geometry"] = np.array([scan.angle_min, scan.angle_increment,
+                                                        scan.range_min, scan.range_max])
+                scans[prefix + "_frame"] = np.array(scan.header.frame_id)
+                scans[prefix + "_stamp"] = np.array([scan.header.stamp.sec, scan.header.stamp.nanosec])
+                try:
+                    r, t = to_matrix(self.tf.lookup_transform("base_link", scan.header.frame_id,
+                                                              Time.from_msg(scan.header.stamp)))
+                    scans[prefix + "_base_rotation"], scans[prefix + "_base_translation"] = r, t
+                except Exception:
+                    pass  # The missing transform is itself diagnostic evidence.
+            if scans:
+                np.savez_compressed(stem + "_scans.npz", **scans)
             with open(stem + ".json", "w") as f:
                 json.dump({"reason": reason, "time": self.now(), "pose": self.pose(),
                            "resolution": m.info.resolution,
@@ -226,6 +265,40 @@ class VoiceNav(Node):
                            "sighting": getattr(self, "_last_sighting", None)}, f)
         except (OSError, ValueError) as e:
             self.get_logger().warn(f"costmap dump: {e}")
+
+    def dump_grounding(self, frames, target, box, depth, rotation, translation, chair):
+        """Bounded local RGB-D snapshots for replay; never alter navigation on write failure."""
+        directory = os.environ.get("VLM_NAV_DUMP")
+        count = getattr(self, "_grounding_dumps", 0)
+        if not directory or count >= 32:
+            return
+        try:
+            os.makedirs(directory, exist_ok=True)
+            name = re.sub(r"[^a-z0-9_-]", "_", target.lower())[:60]
+            stem = os.path.join(directory, f"ground_{time.time_ns()}_{name}")
+            np.savez_compressed(stem + ".npz", rgb=to_rgb(frames["rgb"]), depth_metres=depth,
+                                box=np.asarray(box), intrinsics=np.asarray(frames["info"].k),
+                                map_rotation=rotation, map_translation=translation, chair=chair,
+                                camera_frame=np.array(frames["depth"].header.frame_id),
+                                rgb_stamp=np.array([frames["rgb"].header.stamp.sec, frames["rgb"].header.stamp.nanosec]),
+                                depth_stamp=np.array([frames["depth"].header.stamp.sec, frames["depth"].header.stamp.nanosec]))
+            self._grounding_dumps = count + 1
+        except (OSError, ValueError) as exc:
+            self.get_logger().warn(f"RGB-D dump: {exc}")
+
+    def reset_search_state(self):
+        self._target_seen = self._depth_rejected = self._search_blocked = False
+        self._last_sighting = None
+
+    def search_failure(self, target):
+        """Do not call a recognized but blocked/ambiguous target absent."""
+        if self._target_seen:
+            if self._last_sighting is None and self._depth_rejected:
+                return f"I see the {target}, but I can't estimate its distance reliably."
+            return f"I see the {target}, but I can't find a free spot next to it."
+        if self._search_blocked:
+            return f"I couldn't finish looking for the {target}; the search turn could not complete."
+        return f"Sorry, the {target} was not found."
 
     def on_costmap(self, m):
         res, h, w = m.info.resolution, m.info.height, m.info.width
@@ -311,6 +384,7 @@ class VoiceNav(Node):
         deadline = self.now() + SEARCH_TIME
         self.command_deadline = deadline + 120
         self.seen_floor = None  # coverage belongs to this command, including its close-in re-looks
+        self.reset_search_state()
         try:
             for attempt in range(APPROACHES):
                 # a re-look after driving toward an object already seen gets at least a minute,
@@ -322,7 +396,7 @@ class VoiceNav(Node):
                 if self.cancelled.is_set():
                     return
                 if found is None or self.now() >= self.command_deadline:
-                    self.say(f"Sorry, the {target} was not found.")
+                    self.say(self.search_failure(target))
                     return
                 goal, rng, bearing = found
                 pose = self.pose()
@@ -501,6 +575,7 @@ class VoiceNav(Node):
                         return None
                     self.say(f"Turning to look for the {target}.")
                     if not self.turn(2 * math.pi / LOOKS):
+                        self._search_blocked = True
                         blocked += 1
                         break
             if self.now() > deadline or self.cancelled.is_set():
@@ -545,6 +620,11 @@ class VoiceNav(Node):
             return True
         self._last_sighting = {"target": target, "object": obj.tolist()}
         self.dump_costmap(f"{target}: no reachable viewpoint for sighting")
+        coverage = self.coverage(pose)
+        if coverage is not None:
+            paths = coverage["path"][tuple(coverage["cells"].T)]
+            self.get_logger().info(f"{target}: {np.count_nonzero(np.isfinite(paths))} reachable "
+                                   f"turn-safe viewpoints of {len(paths)}, axle clearance {SPIN_CLEAR + SPOT_MARGIN:.2f} m.")
         self.get_logger().info(f"The {target} sighting has no reachable viewpoint; continuing the search.")
         return False
 
@@ -557,6 +637,11 @@ class VoiceNav(Node):
         return self.send(self.nav, g, deadline) == GoalStatus.STATUS_SUCCEEDED
 
     def turn(self, angle):
+        pose = self.pose()
+        if pose is None or not self.clear(pose[:2], pose[2], SPIN_CLEAR):
+            self.get_logger().info(f"Search turn skipped: {SPIN_CLEAR:.2f} m axle clearance is unavailable.")
+            self.dump_costmap("search turn blocked before submitting a spin")
+            return False
         spin = Spin.Goal()
         spin.target_yaw = angle
         spin.time_allowance.sec = 30
@@ -634,7 +719,7 @@ class VoiceNav(Node):
             js = (np.arange(0, h * res, 0.25) / res).astype(int)
             ids = (np.arange(0, w * res, 0.25) / res).astype(int)
             jj, ii = np.meshgrid(js, ids, indexing="ij")
-            safe = (grid[jj, ii] == 0) & (clearance[jj, ii] > TURN_CLEAR + AXLE_BACK)
+            safe = (grid[jj, ii] == 0) & (clearance[jj, ii] > SPIN_CLEAR + SPOT_MARGIN)
             cells = np.column_stack((jj[safe], ii[safe]))
             # At 5 m the rays are at most one cell apart; half-cell radial steps catch diagonals.
             angles = np.linspace(0, 2 * math.pi, math.ceil(2 * math.pi * 5 / res), endpoint=False)
@@ -710,7 +795,7 @@ class VoiceNav(Node):
             if not near.size:
                 return None
             x, y = c["xy"][near[np.argmin(paths[near])]]
-            return float(x), float(y), math.atan2(y - pose[1], x - pose[0])
+            return spot_goal(x, y, math.atan2(y - pose[1], x - pose[0]))
         # every unseen non-obstacle cell counts, not only where the chair's centre can go: a
         # tight room has little of that, and m3_x gave up with the whole bedroom unseen
         floor = (c["open"] & ~self.seen_floor).ravel()
@@ -735,6 +820,8 @@ class VoiceNav(Node):
                 best_path = paths[k]
         if best is None:
             best, best_path = fallback, fallback_path
+        if best is not None:
+            best = spot_goal(*best)
         if best is None or best_path / 0.4 + 25 > deadline - self.now():
             j, i = c["start"]
             inside = 0 <= j < c["grid"].shape[0] and 0 <= i < c["grid"].shape[1]
@@ -778,7 +865,7 @@ class VoiceNav(Node):
             ii = np.floor((line[:, 0] - ox) / res).astype(int)
             jj = np.floor((line[:, 1] - oy) / res).astype(int)
             if np.all((ii >= 0) & (ii < w) & (jj >= 0) & (jj < h)) and np.all(c["open"][jj, ii]):
-                return float(p[0]), float(p[1]), math.atan2(d[1], d[0])
+                return spot_goal(p[0], p[1], math.atan2(d[1], d[0]))
         return None
 
     def ground(self, cam, target):
@@ -801,6 +888,8 @@ class VoiceNav(Node):
         box = self.vlm(to_rgb(f["rgb"]), target)
         if box is None:
             return None
+        self._target_seen = True
+        self._depth_rejected = True  # remains uncertain until a valid depth estimate is constructed
         depth = to_metres(f["depth"])
         h, w = depth.shape
         x1, y1, x2, y2 = (box[0] * w / VLM_W, box[1] * h / VLM_H,
@@ -810,9 +899,12 @@ class VoiceNav(Node):
                                                       Duration(seconds=0.5)))
             chair = self.tf.lookup_transform("map", "base_link", Time()).transform.translation
         except Exception as e:  # tf2 raises several unrelated exception types
+            self.dump_grounding(f, target, box, depth, np.full((3, 3), np.nan),
+                                np.full(3, np.nan), np.full(2, np.nan))
             self.get_logger().warn(f"tf: {e}")
             return None
         chair = np.array([chair.x, chair.y])
+        self.dump_grounding(f, target, box, depth, r, t, chair)
         k = f["info"].k
         first = None
         # The whole box first. A wide object's centre can sit where the chair has no room (m3_v:
@@ -839,7 +931,10 @@ class VoiceNav(Node):
             ordered = np.sort(above if above.size else zs)
             lo, hi = int(len(ordered) * 0.1), int(len(ordered) * 0.9)
             if np.any(np.diff(ordered[lo:hi + 1]) > 0.5):
-                self.get_logger().info(f"{target}: separated depth surfaces in box; looking again.")
+                self._depth_rejected = True
+                percentiles = np.percentile(ordered, [10, 25, 50, 90]).round(3).tolist()
+                self.get_logger().info(f"{target}: separated depth surfaces in box; looking again. "
+                                       f"Depth p10/p25/p50/p90={percentiles} m, {len(ordered)} samples.")
                 return None
             z = float(np.percentile(above if above.size else zs, 25))
             u, v = (bx1 + bx2) / 2, (y1 + y2) / 2
@@ -852,6 +947,7 @@ class VoiceNav(Node):
             self.get_logger().info(f"{target}: map ({obj[0]:.2f}, {obj[1]:.2f}) (depth ({raw[0]:.2f}, "
                                    f"{raw[1]:.2f})), chair at ({chair[0]:.2f}, {chair[1]:.2f})")
             d = obj - chair
+            self._depth_rejected = False
             hit = self.standoff(obj, chair), float(np.hypot(*d)), math.atan2(d[1], d[0])
             first = first or hit
             if hit[0] is not None or hit[1] > MAX_RANGE:  # far sightings only need the bearing
@@ -953,9 +1049,16 @@ class VoiceNav(Node):
         self.get_logger().info(f"VLM box {[x1, y1, x2, y2]} for '{target}', verify: {label}")
         dump = os.environ.get("VLM_NAV_DUMP")  # bench: keep each verified frame for offline replay
         if dump:
-            cv2.imwrite(os.path.join(dump, f"verify_{int(self.now())}_{target}_{label}_"
-                                           f"{x1}_{y1}_{x2}_{y2}.jpg".replace(" ", "-")),
-                        cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+            try:
+                os.makedirs(dump, exist_ok=True)
+                name = re.sub(r"[^a-z0-9_-]", "_", f"{target}_{label}".lower())[:80]
+                written = cv2.imwrite(os.path.join(dump, f"verify_{int(self.now())}_{time.time_ns()}_{name}_"
+                                                  f"{x1}_{y1}_{x2}_{y2}.jpg"),
+                                      cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                if not written:
+                    raise OSError("JPEG writer returned failure")
+            except (OSError, cv2.error) as exc:
+                self.get_logger().warn(f"RGB verification dump: {exc}")
         # A near-synonym label only counts on a box big enough to judge: the six kin-labelled
         # wardrobe boxes of m3_z to m3_ab were 189-252 px tall on the real wardrobe and 29-94 px on
         # far kitchen cabinets (one sent the chair 6 m the wrong way in m3_ab).
@@ -976,21 +1079,40 @@ class VoiceNav(Node):
         # The chair's side (the old +/-1 rad sweep) first, nearest distance first; the far side
         # only when that fails, or a closer spot behind the object sends the chair round it.
         near = np.abs(offsets) <= 1.0
-        for dth, dist in [(o, d) for side in (offsets[near], offsets[~near])
-                          for d in STANDOFF for o in side]:
-            a = base + dth
-            g = obj - dist * np.array([math.cos(a), math.sin(a)])
-            i, j = math.floor((g[0] - ox) / res), math.floor((g[1] - oy) / res)
-            # room to turn in place: a cost-30 goal 0.66 m from the sim bed's corner trapped
-            # the chair (spin and backup both "Collision Ahead")
-            # the object must be in plain view from the spot: a reachable, clear spot on the far
-            # side of a partition would report arrival from the next room
-            sight = all(self.cost(g + (obj - g) * t) != 100
-                        for t in np.arange(0, max(dist - 0.3, 0), res / 2) / dist)
-            if (0 <= i < w and 0 <= j < h and np.isfinite(c["path"][j, i]) and sight
-                    and self.clear(g, a)):
-                return g[0], g[1], a  # yaw a faces the object
+        # Room to turn in place first (a cost-30 goal 0.66 m from the sim bed's corner trapped
+        # the chair: spin and backup both "Collision Ahead"). Only when no spot has it, a spot
+        # whose footprint fits, at least 1.0 m from the object: the chair has no room to spin
+        # there, but it arrives facing the drive direction and Nav2 still checks every step.
+        # Real chair, 2 m ahead: the depth estimate sat 0.7 m past the legs, so every spot up to
+        # 1.3 m from it was inside the chair; the footprint check itself keeps the chair off it.
+        for room, dists in ((self.clear, STANDOFF), (self.fits, FIT_STANDOFF)):
+            for dth, dist in [(o, d) for side in (offsets[near], offsets[~near])
+                              for d in dists for o in side]:
+                a = base + dth
+                g = obj - dist * np.array([math.cos(a), math.sin(a)])
+                i, j = math.floor((g[0] - ox) / res), math.floor((g[1] - oy) / res)
+                # the object must be in plain view from the spot: a reachable, clear spot on the
+                # far side of a partition would report arrival from the next room
+                sight = all(self.cost(g + (obj - g) * t) != 100
+                            for t in np.arange(0, max(dist - 0.3, 0), res / 2) / dist)
+                if 0 <= i < w and 0 <= j < h and np.isfinite(c["path"][j, i]) and sight and room(g, a):
+                    return g[0], g[1], a  # yaw a faces the object
         return None
+
+    def fits(self, p, yaw):
+        """The padded footprint of a chair at base_link p facing yaw, plus FIT_MARGIN, holds no
+        lethal or unknown cell."""
+        m, res = self.costmap, self.costmap.info.resolution
+        x0, x1, half = FIT_BOX
+        gx, gy = np.meshgrid(np.arange(x0 - FIT_MARGIN, x1 + FIT_MARGIN + res / 2, res),
+                             np.arange(-half - FIT_MARGIN, half + FIT_MARGIN + res / 2, res))
+        wx = p[0] + math.cos(yaw) * gx - math.sin(yaw) * gy
+        wy = p[1] + math.sin(yaw) * gx + math.cos(yaw) * gy
+        i = np.floor((wx - m.info.origin.position.x) / res).astype(int)
+        j = np.floor((wy - m.info.origin.position.y) / res).astype(int)
+        if not ((i >= 0) & (i < m.info.width) & (j >= 0) & (j < m.info.height)).all():
+            return False
+        return not obstacle_mask(self, m)[j, i].any()
 
     def near_face(self, chair, obj):
         """The first lethal costmap cell on the line from the chair through the depth estimate,

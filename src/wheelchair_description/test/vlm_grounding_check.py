@@ -18,7 +18,7 @@ import vlm_nav as nav
 WIDTH, HEIGHT = 64, 48
 
 
-def ground(depth, encoding, camera_height=1.34):
+def ground(depth, encoding, camera_height=1.34, configure=None):
     """Forward-facing RGB-D camera at 1.34 m, with a box covering the frame."""
     rgb, distance = nav.Image(), nav.Image()
     for message in (rgb, distance):
@@ -57,8 +57,11 @@ def ground(depth, encoding, camera_height=1.34):
         get_clock=lambda: Struct(now=lambda: nav.Time.from_msg(rgb.header.stamp)),
         get_logger=lambda: Struct(info=messages.append, warn=messages.append),
         vlm=lambda image, target: [0, 0, nav.VLM_W, nav.VLM_H],
+        dump_grounding=lambda *args: None,
         near_face=near_face,
         standoff=lambda point, chair: (float(point[0] - .8), float(point[1]), 0.))
+    if configure is not None:
+        configure(fixture)
     result = nav.VoiceNav.ground(fixture, 'camera', 'object')
     return result, geometry_calls, messages
 

@@ -127,6 +127,11 @@ class WheelchairFootprintFilter:
             ( -35,  -23, 0.32),
             (  50,   60, 0.48),
             (  22,   32, 0.45),
+            # 2026-11-12 stationary StopZone captures (logs/stopzone_20261112_*): chair parts the
+            # rear 1.00 m crop misses, confirmed by the user. Range = observed max + 0.05 m.
+            (-152, -140, 1.50),  # rear-right corner part: all 3 captures, -150.6..-141.6 deg, 1.29-1.45 m
+            (-146, -137, 1.17),  # right drive wheel: seen when legs don't occlude, -145.1..-137.8 deg, 1.04-1.12 m
+            ( 156,  162, 1.11),  # left drive wheel: 157.4..160.2 deg, 1.00-1.06 m
         ]
         self.exclusion_zones_rad = [
             (np.radians(a1), np.radians(a2), r)
