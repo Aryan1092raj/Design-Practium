@@ -274,23 +274,26 @@ mode3_main() {
     shift
     M3_CHECKS=1
     M3_VERSION=30
-    M3_MAP='' M3_LOCATIONS=locations.yaml
+    M3_MAP='' M3_LOCATIONS=locations.yaml M3_INSPECT=''
     M3_MIC=true
     [[ "$M3_MODE" != sim ]] || M3_MIC=false
     while (( $# )); do
         case "$1" in
             --text) M3_MIC=false ;;
             --no-checks) M3_CHECKS=0 ;;
-            --version|--map|--locations)
+            --version|--map|--locations|--inspect)
                 (( $# >= 2 )) || mode3_fail "$1 needs a value"
                 case "$1" in
                     --version) M3_VERSION=$2 ;;
                     --map) M3_MAP=$2 ;;
                     --locations) M3_LOCATIONS=$2 ;;
+                    --inspect)
+                        [[ -n "${2//[[:space:]]/}" ]] || mode3_fail '--inspect needs an object phrase'
+                        M3_INSPECT=$2; M3_MIC=false ;;
                 esac
                 shift ;;
             -h|--help)
-                printf 'Usage: scripts/mode3_%s.sh [--version 30|31] [--text] [--map PATH] [--locations FILE] [--no-checks]\n' "$M3_MODE"
+                printf 'Usage: scripts/mode3_%s.sh [--version 30|31] [--text] [--map PATH] [--locations FILE] [--inspect OBJECT] [--no-checks]\n' "$M3_MODE"
                 printf 'Sim always uses text. --no-checks skips hardware, memory and scan rates; readiness and amcl_settle remain required.\n'
                 return 0 ;;
             *) mode3_fail "unknown option: $1" ;;
@@ -298,6 +301,7 @@ mode3_main() {
         shift
     done
     [[ "$M3_VERSION" == 30 || "$M3_VERSION" == 31 ]] || mode3_fail '--version must be 30 or 31'
+    [[ -z "$M3_INSPECT" || "$M3_VERSION" == 30 ]] || mode3_fail '--inspect is for v30 object diagnostics'
     [[ "$M3_MODE" != sim || "$M3_VERSION" == 30 ]] || mode3_fail 'use the real v31 entry point for saved-place navigation'
     if [[ "$M3_MODE" == real ]]; then
         printf 'SAFETY: Keep the power cut within reach. FlySky is off; there is no stick override.\n'
@@ -316,6 +320,13 @@ mode3_main() {
     mkdir -p logs || mode3_fail 'cannot create logs/'
     local stamp tool status pid file
     stamp=$(date +%Y%m%d_%H%M%S)_$$
+    if [[ -n "$M3_INSPECT" ]]; then
+        M3_MIC=false voice=inspect_object.py
+        export VLM_NAV_DUMP="${VLM_NAV_DUMP:-$M3_ROOT/logs/inspect_$stamp}"
+        mkdir -p "$VLM_NAV_DUMP" || mode3_fail 'cannot create inspection output directory'
+    elif [[ -n "${VLM_NAV_DUMP:-}" ]]; then
+        mkdir -p "$VLM_NAV_DUMP" || mode3_fail 'cannot create VLM_NAV_DUMP directory'
+    fi
     M3_NAV_LOG="$M3_ROOT/logs/${profile}_${M3_MODE}_nav_${stamp}.log"
     M3_VOICE_LOG="$M3_ROOT/logs/${profile}_${M3_MODE}_voice_${stamp}.log"
     M3_CAMERA_LOG="$M3_ROOT/logs/mode3_real_cameras_${stamp}.log"
@@ -449,14 +460,22 @@ mode3_main() {
         "$M3_ROOT/.venv-voice/bin/python" "$M3_ROOT/scripts/prepare_voice_models.py" \
             --version 31 --mic false --locations "$M3_LOCATIONS" || mode3_fail 'saved places or Qwen3 model unavailable'
     fi
-    mode3_text_command
-    printf 'Starting voice (mic=%s); wait for "Voice navigation ready.". Ctrl+C stops voice, then navigation.\nLog: %s\n' \
-        "$M3_MIC" "$M3_VOICE_LOG"
+    if [[ -n "$M3_INSPECT" ]]; then
+        printf 'Starting stationary inspection; no microphone or movement commands.\nLog: %s\n' "$M3_VOICE_LOG"
+    else
+        mode3_text_command
+        printf 'Starting voice (mic=%s); wait for "Voice navigation ready.". Ctrl+C stops voice, then navigation.\nLog: %s\n' \
+            "$M3_MIC" "$M3_VOICE_LOG"
+    fi
     # Keep terminal output live, but isolate signals so the launcher controls shutdown order.
     exec {M3_VOICE_FD}> >(tee "$M3_VOICE_LOG" 9>&-)
     M3_TEE_PID=$!
     local -a voice_args=()
     [[ "$M3_VERSION" != 31 ]] || voice_args=(-p "locations:=$M3_LOCATIONS")
+    [[ -z "$M3_INSPECT" ]] || voice_args=(-p "target:=$M3_INSPECT")
+    if [[ -n "$M3_INSPECT" ]]; then
+        printf 'Inspecting %s without sending navigation/spin goals; snapshots: %s\n' "$M3_INSPECT" "$VLM_NAV_DUMP"
+    fi
     env --default-signal=INT,TERM setsid "$M3_ROOT/.venv-voice/bin/python" -u \
         "$M3_ROOT/src/wheelchair_description/scripts/$voice" --ros-args \
         -p "use_sim_time:=$([[ "$M3_MODE" == sim ]] && printf true || printf false)" \
