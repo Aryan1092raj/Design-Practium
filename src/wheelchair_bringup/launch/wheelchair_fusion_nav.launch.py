@@ -28,6 +28,50 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
+# Recover a configured monitor if the lifecycle manager lost its configure reply.
+COLLISION_MONITOR_STARTUP_CHECK = """
+import time
+import rclpy
+from lifecycle_msgs.msg import State, Transition
+from lifecycle_msgs.srv import GetState, ChangeState
+
+rclpy.init()
+node = rclpy.create_node('collision_monitor_startup_check')
+state = node.create_client(GetState, '/collision_monitor/get_state')
+change = node.create_client(ChangeState, '/collision_monitor/change_state')
+deadline = time.monotonic() + 30.0
+
+def call(client, request):
+    end = min(deadline, time.monotonic() + 2.0)
+    if not client.wait_for_service(timeout_sec=max(0.0, end - time.monotonic())):
+        return None
+    future = client.call_async(request)
+    while rclpy.ok() and not future.done() and time.monotonic() < end:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    return future.result() if future.done() else None
+
+try:
+    while rclpy.ok() and time.monotonic() < deadline:
+        reply = call(state, GetState.Request())
+        if reply is not None:
+            if reply.current_state.id == State.PRIMARY_STATE_ACTIVE:
+                node.get_logger().info('collision_monitor is active')
+                break
+            if reply.current_state.id == State.PRIMARY_STATE_INACTIVE:
+                request = ChangeState.Request()
+                request.transition.id = Transition.TRANSITION_ACTIVATE
+                call(change, request)
+                # Verify state even if the activation response was lost too.
+        rclpy.spin_once(node, timeout_sec=0.5)
+    else:
+        node.get_logger().error('collision_monitor did not become active within 30 s')
+        raise SystemExit(1)
+finally:
+    node.destroy_node()
+    rclpy.try_shutdown()
+"""
+
+
 def generate_launch_description():
     # Package directories
     wheelchair_bringup_dir = get_package_share_directory('wheelchair_bringup')
@@ -321,8 +365,20 @@ def generate_launch_description():
     )
 
     collision_monitor_startup = TimerAction(
-        period=28.0,  # FIX: Start with Nav2 stack (was 32.0) — bridge depends on /cmd_vel_safe
-        actions=[collision_monitor, collision_monitor_lifecycle_manager],
+        period=31.0,  # 3 s after the Nav2 stack so the monitor's configure reply is not lost in the startup burst ("failed to send response to /collision_monitor/change_state", 2026-11-14); bridge depends on /cmd_vel_safe
+        actions=[
+            collision_monitor,
+            collision_monitor_lifecycle_manager,
+            TimerAction(
+                period=12.0,  # Give normal lifecycle startup time before checking actual state.
+                actions=[ExecuteProcess(
+                    cmd=['python3', '-c', COLLISION_MONITOR_STARTUP_CHECK],
+                    output='screen',
+                    condition=IfCondition(use_collision_monitor),
+                )],
+                condition=IfCondition(autostart),
+            ),
+        ],
     )
 
     # CSV data logger DISABLED — use rosbag + analysis scripts instead

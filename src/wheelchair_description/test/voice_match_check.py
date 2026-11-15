@@ -42,6 +42,7 @@ class Log:
 def make(places):
     v = voice_nav.VoiceNav.__new__(voice_nav.VoiceNav)  # skip Node.__init__: no ROS graph needed
     v.places, v.lock, v.busy, v.cancelled, v.said = places, threading.Lock(), False, threading.Event(), []
+    v.command_generation = 0
     v.get_logger = lambda: Log()
     v.say = v.said.append
     v.picked = []
@@ -55,9 +56,14 @@ def make(places):
 def resolve(v, text):
     v.picked.clear()
     v.on_text(text)
-    for th in threading.enumerate():  # on_text starts run() in a thread
-        if th is not threading.current_thread() and th.daemon:
-            th.join(1)
+    deadline = voice_nav.time.monotonic() + 35
+    while voice_nav.time.monotonic() < deadline:
+        workers = [th for th in threading.enumerate()
+                   if th is not threading.current_thread() and th.daemon]
+        if not workers:
+            break
+        for th in workers:  # resolution now runs before the navigation worker
+            th.join(0.1)
     return v.picked[0] if v.picked else None
 
 

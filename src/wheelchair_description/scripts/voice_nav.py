@@ -76,10 +76,13 @@ class VoiceNav(Node):
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.spin_client = ActionClient(self, Spin, "spin")
         self.goal_handle = None
+        self.goal_response = None
+        self.goal_lock = threading.Lock()
         self.busy = False
         self.next = None  # (name, place) said while moving; run() starts it after the cancel
         self.lock = threading.Lock()  # busy and next change together across threads
         self.cancelled = threading.Event()
+        self.command_generation = 0
 
     def say(self, text):
         """Replies are printed and published on /voice/status; the real chair has no speaker."""
@@ -132,19 +135,29 @@ class VoiceNav(Node):
 
     def on_text(self, text):
         t = text.lower()
+        with self.lock:
+            self.command_generation += 1
+            generation = self.command_generation
+            self.next = None
         if STOP.search(t):
             with self.lock:
+                if generation != self.command_generation:
+                    return
                 self.next = None
+                self.cancel()
                 if not self.busy:
                     self.clear_plan()
                     self.say("Nothing to stop.")
                     return
-                self.cancel()
             self.say("Stopping.")
             return
         if not self.places:
             self.say("No places saved. Record them with save_location.py, then restart me.")
             return
+        threading.Thread(target=self.resolve, args=(t, generation), daemon=True).start()
+
+    def resolve(self, t, generation):
+        """Resolve in a worker so the executor can process stop and Nav2 replies."""
         names = {k: k.replace("_", " ") for k in self.places}
         m = GO.search(t)
         # A bare place name ("kitchen.") counts as a command, because a pause often splits
@@ -163,11 +176,13 @@ class VoiceNav(Node):
             slm = self.slm_place(t, names)  # None when the SLM is down
             if slm and slm != "none":
                 match = process.extractOne(slm, names, scorer=fuzz.WRatio, score_cutoff=85)
-        if not match:
-            if m and not NOT.search(t):
-                self.say(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
-            return  # otherwise ordinary speech near the chair is ignored
         with self.lock:
+            if generation != self.command_generation:
+                return  # stop or a newer command invalidated this resolution
+            if not match:
+                if m and not NOT.search(t):
+                    self.say(f"I don't know {target}. I know " + ", ".join(names.values()) + ".")
+                return  # otherwise ordinary speech near the chair is ignored
             if self.busy:  # a new place replaces the current goal
                 self.next = (match[0], self.places[match[2]])
                 self.cancel()
@@ -179,9 +194,11 @@ class VoiceNav(Node):
                          daemon=True).start()
 
     def cancel(self):
-        self.cancelled.set()
-        if self.goal_handle:
-            self.goal_handle.cancel_goal_async()
+        with self.goal_lock:
+            self.cancelled.set()
+            handle = self.goal_handle
+        if handle:
+            handle.cancel_goal_async()
 
     def clear_plan(self):
         path = Path()
@@ -233,17 +250,48 @@ class VoiceNav(Node):
             self.send(self.spin_client, spin)
 
     def send(self, client, goal):
+        if self.cancelled.is_set():
+            return None
         if not client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error("Nav2 action server not available")
             return None
-        handle = wait(client.send_goal_async(goal))
+        with self.goal_lock:
+            if self.cancelled.is_set():
+                return None
+            response = client.send_goal_async(goal)
+            self.goal_response = response
+        end = time.monotonic() + 5.0
+        while not response.done() and not self.cancelled.is_set() and time.monotonic() < end:
+            time.sleep(0.05)
+        if not response.done():
+            # Acceptance may arrive after the bounded wait: it must still be cancelled.
+            def cancel_late(future):
+                handle = future.result()
+                if handle is not None and handle.accepted:
+                    handle.cancel_goal_async()
+                with self.goal_lock:
+                    if self.goal_response is future:
+                        self.goal_response = None
+            self.cancelled.set()
+            response.add_done_callback(cancel_late)
+            return None
+        handle = response.result()
+        with self.goal_lock:
+            self.goal_response = None
+            if handle.accepted:
+                self.goal_handle = handle
         if not handle.accepted:
             return None
-        self.goal_handle = handle
         if self.cancelled.is_set():
             handle.cancel_goal_async()
+            self.goal_handle = None
+            return None
         result = handle.get_result_async()
         while not result.done() and not nav2_gone(client, handle, self):
+            if self.cancelled.is_set():
+                self.cancel()
+                self.goal_handle = None
+                return None
             time.sleep(0.2)
         self.goal_handle = None
         return result.result().status if result.done() else None
@@ -313,10 +361,11 @@ def main():
         # Keep the executor alive briefly so cancellation can reach Nav2 before
         # the launcher stops the navigation process group. Drop queued places.
         with node.lock:
+            node.command_generation += 1
             node.next = None
             node.cancel()
         deadline = time.monotonic() + 2.0
-        while node.busy and rclpy.ok() and time.monotonic() < deadline:
+        while (node.busy or node.goal_response is not None) and rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.05)
         node.destroy_node()
         rclpy.try_shutdown()
