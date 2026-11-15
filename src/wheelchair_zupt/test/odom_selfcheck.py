@@ -82,7 +82,8 @@ print(f'Legacy twist reintegration on same synthetic stream: {legacy_distance:.6
 # for a curved wheel trajectory, inflating ENDPOINT distance without a speed
 # scale error. The configured default must preserve wheel heading and endpoint.
 launch = (ROOT/'src/wheelchair_bringup/launch/wheelchair_fusion_localization.launch.py').read_text()
-assert re.search(r"'gyro_blend_alpha':\s*1\.0", launch)
+# The real launch now takes heading from the validated gyro (fixes.md 2026-11-15); the class default stays wheel-only.
+assert re.search(r"'gyro_blend_alpha':\s*0\.0", launch)
 assert Filter().gyro_blend_alpha == 1.0
 f = Filter()
 f.update(0.0, 0.0, 0.0, 0.0, EPOCH)
