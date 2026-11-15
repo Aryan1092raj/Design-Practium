@@ -23,6 +23,7 @@ import json
 import math
 import os
 import re
+import signal
 import threading
 import time
 
@@ -34,6 +35,7 @@ from action_msgs.msg import GoalStatus
 from faster_whisper import WhisperModel
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from nav2_msgs.action import NavigateToPose, Spin
+from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
@@ -85,7 +87,7 @@ FREE_COST = 50  # global costmap cells below this count as free for a goal
 # Nav2's 0.15 m goal tolerance.
 AXLE_BACK = 0.32
 TURN_CLEAR = 1.32  # CAD: padded front reaches 1.04 m from axle; corner 1.167 m + 0.15 m goal tolerance
-SPIN_CLEAR = 1.20  # a spin in place sweeps the padded corner (1.167 m); clear() rounds to 24 cells at 0.05 m
+SPIN_CLEAR = 0.70  # user's call 2026-11-14 (was 1.20): the padded corner still sweeps 1.167 m, so obstacles 0.70-1.167 m away can be hit on a spin
 # Search viewpoints are axle positions with SPIN_CLEAR + SPOT_MARGIN to solid structure; the goal
 # puts base_link AXLE_BACK ahead along the approach. The margin absorbs an arrival heading ~45 deg
 # off (0.24 m axle shift). The old base_link rule (TURN_CLEAR + AXLE_BACK, 1.64 m) left 0 spots on
@@ -97,6 +99,7 @@ FIT_MARGIN = 0.10
 FIT_STANDOFF = (1.0, 1.2, 1.3, 1.5, 1.7, 2.0)
 FIT_BOX = (-0.57, 0.69, 0.50)
 STOP = re.compile(r"\b(stop|halt|cancel)\b")
+NOT = re.compile(r"\b(don'?t|do not|never|not|no)\b")  # Mode 2's negation gate
 GO = re.compile(r"\b(?:go|take me|bring me|drive|move|head|navigate)\b.*?\b(?:to|towards?|near)\s+"
                 r"(?:the |a |an |my )?(?P<t>[a-z ]+)")
 
@@ -191,6 +194,8 @@ class VoiceNav(Node):
                                      qos_profile_sensor_data)
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.spin_client = ActionClient(self, Spin, "spin")
+        self.clear_clients = [self.create_client(ClearEntireCostmap, f"/{k}_costmap/clear_entirely_{k}_costmap")
+                              for k in ("local", "global")]
         self.goal_handle = None
         self.goal_response = None
         self.goal_lock = threading.Lock()
@@ -292,7 +297,7 @@ class VoiceNav(Node):
 
     def search_failure(self, target):
         """Do not call a recognized but blocked/ambiguous target absent."""
-        if self._target_seen:
+        if self._target_seen and not self._search_blocked:
             if self._last_sighting is None and self._depth_rejected:
                 return f"I see the {target}, but I can't estimate its distance reliably."
             return f"I see the {target}, but I can't find a free spot next to it."
@@ -363,6 +368,8 @@ class VoiceNav(Node):
                 self.goal_handle.cancel_goal_async()
             threading.Thread(target=self.say, args=("Stopping.",), daemon=True).start()
             return
+        if NOT.search(t):
+            return
         m = GO.search(t)
         if not m:
             return  # ordinary speech near the chair is ignored
@@ -385,7 +392,10 @@ class VoiceNav(Node):
         self.command_deadline = deadline + 120
         self.seen_floor = None  # coverage belongs to this command, including its close-in re-looks
         self.reset_search_state()
+        # 2026-11-14 real run: people walking round the parked chair during startup left
+        # obstacle-layer marks that boxed it in; live sensors re-mark real obstacles at once.
         try:
+            self.clear_costmaps()
             for attempt in range(APPROACHES):
                 # a re-look after driving toward an object already seen gets at least a minute,
                 # and whatever is left of the search: in m3_ab a false far sighting led to a
@@ -574,7 +584,12 @@ class VoiceNav(Node):
                     if self.cancelled.is_set() or self.now() > deadline:
                         return None
                     self.say(f"Turning to look for the {target}.")
-                    if not self.turn(2 * math.pi / LOOKS):
+                    before = self.pose()
+                    if not self.turn(2 * math.pi / LOOKS) and not (
+                            # retry only a turn refused before moving: a partial spin would leave a gap
+                            before and (after := self.pose()) and abs(math.atan2(math.sin(after[2] - before[2]),
+                                                                                 math.cos(after[2] - before[2]))) < 0.09
+                            and self.clear_costmaps() and self.turn(2 * math.pi / LOOKS)):
                         self._search_blocked = True
                         blocked += 1
                         break
@@ -585,10 +600,15 @@ class VoiceNav(Node):
                 # spin hit "Collision Ahead" and the search ended in 10 s). Scan from the nearest
                 # turn-safe spot instead; twice at most, in case Nav2 itself is gone.
                 goal = self.coverage_goal(None, deadline, nearest=True) if 0 < blocked <= 2 else None
+                before = self.pose()
                 if goal is None or not self.go_to(goal, deadline):
                     return None
+                after = self.pose()
+                if before and after and math.dist(before[:2], after[:2]) >= 0.5:
+                    blocked = 0  # a new spot gets its own two relocations
                 continue
             self.mark_seen()
+            blocked, self._search_blocked = 0, False  # this spot finished a full scan
             seen, go = self.choose(views, target)
             if seen:  # the all-views call saw it although the per-view boxes missed it: look again
                 self.turn_to(views[seen - 1][1])
@@ -604,6 +624,30 @@ class VoiceNav(Node):
             if not self.go_to(goal, deadline):
                 return None
         return None
+
+    def clear_costmaps(self):
+        """Clear both costmaps and wait for a global costmap rebuilt from fresh scans."""
+        for client in self.clear_clients:
+            if not client.wait_for_service(timeout_sec=2.0):
+                self.get_logger().warn(f"{client.srv_name} unavailable; costmap not cleared")
+                return False
+            future = client.call_async(ClearEntireCostmap.Request())
+            end = time.monotonic() + 3.0
+            while not future.done() and time.monotonic() < end and not self.cancelled.is_set():
+                time.sleep(0.05)
+            if not future.done() or future.exception() is not None:
+                self.get_logger().warn(f"{client.srv_name} failed; costmap not cleared")
+                return False
+        cleared = self.get_clock().now().nanoseconds + 500_000_000  # margin for scans in flight
+        end = time.monotonic() + 5.0
+        while time.monotonic() < end and not self.cancelled.is_set():
+            m = self.costmap
+            if m is not None and Time.from_msg(m.header.stamp).nanoseconds > cleared:
+                self.get_logger().info("Costmaps cleared and rebuilt from fresh scans.")
+                return True
+            time.sleep(0.05)
+        self.get_logger().warn("No fresh global costmap after clearing.")
+        return False
 
     def usable_hit(self, target, hit):
         """An unreachable sighting may be a false box; keep searching instead of ending early."""
@@ -855,7 +899,14 @@ class VoiceNav(Node):
         res, h, w, ox, oy = c["key"]
         if min_range < MIN_SIGHT:
             eligible &= ranges <= MIN_SIGHT
-        order = np.argsort(-ranges if min_range < MIN_SIGHT else ranges)
+        if min_range < MIN_SIGHT:
+            order = np.argsort(-ranges)
+        else:
+            # Nearest 0.5 m band of ranges first, shortest drive within it: a far depth estimate
+            # can be wrong, and the spot on the far side of it (14.51, 2.95 for a chair at 8.9 m)
+            # sent the chair past the real object and had no path.
+            paths = c["path"][tuple(c["cells"].T)]
+            order = np.lexsort((np.where(np.isfinite(paths), paths, np.inf), np.floor(ranges / 0.5)))
         for k in order:
             if not eligible[k]:
                 continue
@@ -1199,13 +1250,21 @@ def main():
     # Keep ROS alive on Ctrl+C until the action cancellation has been processed.
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = VoiceNav()
-    # mic:=false takes commands only from /voice/transcript (sim bench: room speech became goals in m3_q)
-    if node.declare_parameter("mic", True).value:
-        stt = WhisperModel("base.en", device="cpu", compute_type="int8", local_files_only=True)
-        threading.Thread(target=listen, args=(node, stt), daemon=True).start()
-    threading.Thread(target=node.say, args=("Voice navigation ready.",), daemon=True).start()
+    stopping = threading.Event()
+    # An asynchronous KeyboardInterrupt inside a ROS action's pybind callback
+    # can surface as TypeError. Request shutdown and finish the callback instead.
+    previous_handlers = {sig: signal.signal(sig, lambda signum, frame: stopping.set())
+                         for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        rclpy.spin(node)
+        # mic:=false takes commands only from /voice/transcript (sim bench: room speech became goals in m3_q)
+        if node.declare_parameter("mic", True).value:
+            stt = WhisperModel("base.en", device="cpu", compute_type="int8", local_files_only=True)
+            if not stopping.is_set():
+                threading.Thread(target=listen, args=(node, stt), daemon=True).start()
+        if not stopping.is_set():
+            node.say("Voice navigation ready.")
+        while rclpy.ok() and not stopping.is_set():
+            rclpy.spin_once(node, timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
     finally:
@@ -1214,6 +1273,8 @@ def main():
         finally:
             node.destroy_node()
             rclpy.try_shutdown()
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
 
 
 if __name__ == "__main__":

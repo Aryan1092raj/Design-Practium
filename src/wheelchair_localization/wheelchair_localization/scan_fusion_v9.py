@@ -132,6 +132,16 @@ class WheelchairFootprintFilter:
             (-152, -140, 1.50),  # rear-right corner part: all 3 captures, -150.6..-141.6 deg, 1.29-1.45 m
             (-146, -137, 1.17),  # right drive wheel: seen when legs don't occlude, -145.1..-137.8 deg, 1.04-1.12 m
             ( 156,  162, 1.11),  # left drive wheel: 157.4..160.2 deg, 1.00-1.06 m
+            # 2026-11-14 capture (logs/stopzone_20261114_113151): fixed left-side part at base
+            # (0.20, 0.56), confirmed by the user; the (120, 150, 0.50) zone stops just short of it.
+            ( 120,  124, 0.58),  # left side part: 121.4..122.5 deg, 0.514-0.526 m
+            # 2026-11-14 capture (logs/stopzone_20261114_200839): collision monitor StopZone hits at
+            # base (0.0-0.1, 0.5) during a spin with nothing around, confirmed by the user; the
+            # (120, 150, 0.50) zone stops just short of it.
+            ( 134,  139, 0.67),  # left side part: 135.3..137.1 deg, 0.577-0.617 m
+            # 2026-11-14 live /scan_fused with nothing around (user confirmed): steady 12 points/scan at
+            # base (-0.27, 0.89) held FootprintApproach during spins.
+            ( 132,  135, 1.13),  # rear-left part: 132.9..134.4 deg, 1.057-1.083 m
         ]
         self.exclusion_zones_rad = [
             (np.radians(a1), np.radians(a2), r)
@@ -556,7 +566,7 @@ class ScanFusionV9(Node):
                 delta = current_heading - ov.heading
                 # Normalize to [-pi, pi]
                 delta = (delta + math.pi) % (2 * math.pi) - math.pi
-                shift = int(round(delta / self._angle_increment))
+                shift = int(round(-delta / self._angle_increment))
                 if abs(shift) > 0:
                     cam_ranges = np.roll(cam_ranges, shift)
                     # Invalidate bins that wrapped around (no real data there)
