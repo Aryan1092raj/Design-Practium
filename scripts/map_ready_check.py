@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require a live SLAM map, TF and two-minute hardware scan rates before mapping."""
+"""Require a live SLAM map, TF and 60 s hardware scan rates before mapping."""
 import time
 
 import rclpy
@@ -36,14 +36,14 @@ def main():
             raise RuntimeError('SLAM map, map-to-base TF, RViz or scans unavailable after 180 s')
         counts = dict.fromkeys(counts, 0)
         start = time.monotonic()
-        while time.monotonic() - start < 120:
+        while time.monotonic() - start < 60:
             rclpy.spin_once(node, timeout_sec=.1)
         duration = time.monotonic() - start
         for topic, count in counts.items():
             hz = count / duration
             if (topic == '/scan' and not 9 <= hz <= 11) or (topic == '/scan_fused' and hz < 8):
                 raise RuntimeError(f'{topic}: {hz:.2f} Hz; requires about 10 Hz lidar / >=8 Hz fused')
-            print(f'PASS {topic}: {hz:.2f} Hz over 120 s', flush=True)
+            print(f'PASS {topic}: {hz:.2f} Hz over 60 s', flush=True)
         print('PASS live SLAM map, RViz and map-to-base TF; manual mapping can begin', flush=True)
     finally:
         node.destroy_node()

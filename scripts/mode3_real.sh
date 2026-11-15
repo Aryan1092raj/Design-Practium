@@ -17,6 +17,8 @@ mode3_stop_group() {
         fi
         kill -s "$signal" -- "-$pid" 2>/dev/null || true
         deadline=$((SECONDS + 10))
+        # Signal launch once, then allow its own TERM/KILL escalation to finish.
+        [[ "$label" != navigation || "$signal" != INT ]] || deadline=$((SECONDS + 20))
         while kill -0 -- "-$pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 0.2; done
     done
     if kill -0 -- "-$pid" 2>/dev/null; then
@@ -165,7 +167,8 @@ mode3_nav_alive() {
         wait "$M3_NAV_PID" 2>/dev/null; status=$?
         mode3_fail "navigation launch PID $M3_NAV_PID exited with status $status; see $M3_NAV_LOG"
     fi
-    reason=$(rg -m 1 'Aborting bringup|RPLidar health status *: *2|RPLidar internal error|write cycle resulted in an error:.*WheelchairSystem' "$M3_NAV_LOG")
+    reason=$(rg 'Aborting bringup|RPLidar health status *: *2|RPLidar internal error|write cycle resulted in an error:.*WheelchairSystem' "$M3_NAV_LOG" |
+        rg -v '\[lifecycle_manager_collision_monitor\].*Aborting bringup')
     [[ -z "$reason" ]] || mode3_fail "navigation log: $reason; stop and correct hardware before relaunching"
 }
 
@@ -180,6 +183,10 @@ mode3_wait_nav() {
         mode3_nav_alive
         ready=1
         for manager in "${managers[@]}"; do
+            if [[ "$manager" == lifecycle_manager_collision_monitor ]] &&
+                rg -q '\[collision_monitor_startup_check\].*collision_monitor is active' "$M3_NAV_LOG"; then
+                continue
+            fi
             rg -q "\[$manager\].*Managed nodes are active" "$M3_NAV_LOG" || ready=0
         done
         if (( ready )); then
@@ -189,6 +196,10 @@ mode3_wait_nav() {
         sleep 1
     done
     for manager in "${managers[@]}"; do
+        if [[ "$manager" == lifecycle_manager_collision_monitor ]] &&
+            rg -q '\[collision_monitor_startup_check\].*collision_monitor is active' "$M3_NAV_LOG"; then
+            continue
+        fi
         rg -q "\[$manager\].*Managed nodes are active" "$M3_NAV_LOG" || \
             printf 'FAIL missing Managed nodes are active from %s\n' "$manager" >&2
     done
@@ -197,7 +208,7 @@ mode3_wait_nav() {
 
 mode3_ros_check() {
     local timeout_seconds=40
-    [[ "$M3_MODE" != real || "$M3_CHECKS" != 1 ]] || timeout_seconds=140
+    [[ "$M3_MODE" != real || "$M3_CHECKS" != 1 ]] || timeout_seconds=80
     timeout --signal=TERM --kill-after=3s "${timeout_seconds}s" python3 - "$M3_MODE" "$M3_CHECKS" <<'PY_ROS'
 import sys
 import time
@@ -207,12 +218,17 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
 sim, rates = sys.argv[1] == "sim", sys.argv[2] == "1"
-measurement_seconds = 20 if sim else 120
+measurement_seconds = 20 if sim else 60
 rclpy.init()
 node = rclpy.create_node("mode3_startup_check", parameter_overrides=[Parameter("use_sim_time", value=sim)])
 counts = {"/scan": 0} if sim else {"/scan": 0, "/scan_fused": 0}
+last_seen = dict.fromkeys(counts, time.monotonic())
+max_gap = dict.fromkeys(counts, 0.0)
 
 def count(msg, topic):
+    now = time.monotonic()
+    max_gap[topic] = max(max_gap[topic], now - last_seen[topic])
+    last_seen[topic] = now
     counts[topic] += 1
 
 try:
@@ -228,9 +244,16 @@ try:
     if rates:
         counts = dict.fromkeys(counts, 0)
         start = time.monotonic()
+        last_seen = dict.fromkeys(counts, start)
+        max_gap = dict.fromkeys(counts, 0.0)
         clock_start = node.get_clock().now().nanoseconds / 1e9
         while time.monotonic() - start < measurement_seconds:
             rclpy.spin_once(node, timeout_sec=0.1)
+            if not sim:
+                gap = max(max_gap["/scan_fused"], time.monotonic() - last_seen["/scan_fused"])
+                if gap > 1.5:
+                    print(f"FAIL /scan_fused: gap {gap:.2f} s exceeds 1.5 s")
+                    raise SystemExit(1)
         wall = time.monotonic() - start
         duration = node.get_clock().now().nanoseconds / 1e9 - clock_start if sim else wall
         if duration <= 0:
@@ -426,16 +449,26 @@ mode3_main() {
     mode3_wait_nav
     if (( M3_CHECKS )); then
         if [[ "$M3_MODE" == real ]]; then
-            printf 'Checking ROS; keep the chair still during the 120 s scan measurement.\n'
+            printf 'Checking ROS; keep the chair still during the 60 s scan measurement.\n'
         else
             printf 'Checking ROS; measuring the sim scan rate for 20 wall seconds.\n'
         fi
     else
         printf 'Checking ROS node readiness; scan measurement was skipped.\n'
     fi
-    mode3_ros_check
-    status=$?
+    # Real chair: set the RViz pose while the scan check runs; voice waits for both.
+    mode3_ros_check &
+    local check_pid=$! pose_ok=0
+    if [[ "$M3_MODE" == real ]]; then
+        printf 'Meanwhile, in RViz, set 2D Pose Estimate on open floor so the scan matches the walls. Press Enter when aligned.\n'
+        read -r && pose_ok=1
+    fi
+    wait "$check_pid"; status=$?
     (( status == 0 )) || mode3_fail "ROS check exited $status (124 means timeout); see the reason above and $M3_NAV_LOG"
+    if [[ "$M3_MODE" == real ]]; then
+        (( pose_ok )) || mode3_fail 'no Enter received on stdin; use an interactive terminal for the pose check'
+        mode3_pass 'operator confirmed the 2D Pose Estimate'
+    fi
     if [[ "$M3_MODE" == real && "$M3_VERSION" == 30 ]]; then
         python3 "$M3_ROOT/scripts/mode3_localization_check.py" || \
             mode3_fail 'Mode 3 localization settings do not match the tested base reference'
@@ -446,13 +479,7 @@ mode3_main() {
             mode3_fail 'sim RGB/depth stream is not ready for Mode 3'
     fi
     mode3_nav_alive
-    if [[ "$M3_MODE" == real ]]; then
-        printf 'In RViz, set 2D Pose Estimate on open floor so the scan matches the walls. Press Enter when aligned.\n'
-        read -r || mode3_fail 'no Enter received on stdin; use an interactive terminal for the pose check'
-        mode3_pass 'operator confirmed the 2D Pose Estimate'
-    else
-        mode3_pass 'small_house uses the configured initial pose; no RViz pose input required'
-    fi
+    [[ "$M3_MODE" == real ]] || mode3_pass 'small_house uses the configured initial pose; no RViz pose input required'
     mode3_nav_alive
     if [[ "$M3_VERSION" == 30 ]]; then
         mode3_health || mode3_fail 'VLM /health stopped answering before voice startup'

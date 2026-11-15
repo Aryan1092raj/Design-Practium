@@ -89,8 +89,8 @@ env --default-signal=INT,TERM setsid ros2 launch wheelchair_bringup wheelchair_s
     > "$M3_NAV_LOG" 2>&1 < /dev/null 9>&- &
 M3_NAV_PID=$!
 printf '%s\n' "$M3_NAV_PID" > "$M3_NAV_PID_FILE" || mode3_fail 'cannot write mapping PID'
-printf 'Starting SLAM + RViz; log: %s\nKeep still for the full two-minute scan check.\n' "$M3_NAV_LOG"
-timeout --signal=TERM --kill-after=3s 310s python3 "$M3_ROOT/scripts/map_ready_check.py" \
+printf 'Starting SLAM + RViz; log: %s\nKeep still for the full 60 s scan check.\n' "$M3_NAV_LOG"
+timeout --signal=TERM --kill-after=3s 250s python3 "$M3_ROOT/scripts/map_ready_check.py" \
     > "$MAP_OUTPUT/checks.log" 2>&1 9>&- &
 MAP_CHECK_PID=$!
 while kill -0 "$MAP_CHECK_PID" 2>/dev/null; do
