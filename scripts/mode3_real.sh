@@ -468,6 +468,11 @@ mode3_main() {
     if [[ "$M3_MODE" == real ]]; then
         (( pose_ok )) || mode3_fail 'no Enter received on stdin; use an interactive terminal for the pose check'
         mode3_pass 'operator confirmed the 2D Pose Estimate'
+        # A hand-set pose was 0.3-0.5 m off on 2026-11-15; refine it against the map before voice.
+        until python3 "$M3_ROOT/scripts/scan_align.py"; do
+            printf 'Set 2D Pose Estimate again, closer to the true pose, then press Enter.\n'
+            read -r || mode3_fail 'no Enter received on stdin; use an interactive terminal for the pose check'
+        done
     fi
     if [[ "$M3_MODE" == real && "$M3_VERSION" == 30 ]]; then
         python3 "$M3_ROOT/scripts/mode3_localization_check.py" || \

@@ -1,4 +1,6 @@
 # Named goals on maps/real_chair_indoor_2026-11-05_v2.yaml, written by save_location.py.
-dp_lab: {x: 10.95, y: 1.94, yaw: 0.0}
+# dp_lab moved from (10.95, 1.94), 0.69 m from the corridor wall, to 1.2 m clearance; both
+# 2026-11-15 arrivals hit `no valid path found` near the old spot and needed a recovery.
+dp_lab: {x: 10.95, y: 2.50, yaw: 0.0}
 # optical_lab moved from (13.56, 4.69) in the narrow doorway to the open floor in front of it (1.2 m clearance).
 optical_lab: {x: 13.92, y: 3.65, yaw: 0.0}
